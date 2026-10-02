@@ -76,6 +76,38 @@ Ports: gateway 8090, order 8091, payment 8092, inventory 8093. Chaos changes are
 
 Every request is logged as one JSON line (`service`, `trace_id`, `endpoint`, `status_code`, `latency_ms`, `error_type`, ...). Send an `x-trace-id` header (or let the gateway generate one) to follow a request across services.
 
+### Incident backend
+
+The backend (`backend/incident_api`, port 8000) stores incidents in DynamoDB, polls every service's health every 3 s, and pushes changes to dashboards over a WebSocket.
+
+Log in (`aws login --profile incident`) and create or upgrade the table:
+
+```bash
+cd backend && INCIDENT_AWS_PROFILE=incident python -m incident_api.setup_table
+# PowerShell: cd backend; $env:INCIDENT_AWS_PROFILE="incident"; python -m incident_api.setup_table
+```
+
+Run the setup command again when upgrading an existing table. It adds missing indexes and
+backfills every preexisting unresolved incident into the active index. The backfill
+is safe to rerun after an interruption and does not add resolved incidents.
+
+`docker compose up` runs the backend with your `~/.aws` folder mounted, using the profile named by `AWS_PROFILE` in `.env`. If AWS calls start failing, your 12-hour login expired: run `aws login --profile incident` again.
+
+| Method | Path | Purpose |
+|---|---|---|
+| GET | `/api/services` | Latest health of every service (`healthy` / `unhealthy` / `down`), dependencies, active chaos |
+| GET | `/api/incidents?active=true` | Incidents, newest first (`active=true` hides resolved) |
+| POST | `/api/incidents` | Declare an incident: `{"title", "service", "severity", "summary"?, "actor"?}` |
+| GET | `/api/incidents/{id}` | Incident with its timeline |
+| PATCH | `/api/incidents/{id}` | Change `severity`, `status`, `assigned_to`, `title` |
+| POST | `/api/incidents/{id}/acknowledge` | OPEN → ACKNOWLEDGED (`{"actor"?, "note"?}`) |
+| POST | `/api/incidents/{id}/resolve` | → RESOLVED (final) |
+| POST | `/api/simulation/failure` | `{"service": "payment", "failure": "db_slow" \| "latency" \| "error_rate" \| "crash"}` |
+| POST | `/api/simulation/recover` | `{"service": "payment"}` clears injected failures |
+| WS | `/api/ws` | Pushes `{"type": "services", ...}` and `{"type": "incident", ...}` messages |
+
+Interactive API docs: http://localhost:8000/docs
+
 ### Tests
 
 ```bash

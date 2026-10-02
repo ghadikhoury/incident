@@ -1,11 +1,13 @@
 [tool.ruff]
 line-length = 100
 target-version = "py312"
-src = ["services"]
+src = ["services", "backend"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "B", "UP"]
 
 [tool.pytest.ini_options]
-pythonpath = ["services"]
-testpaths = ["services/tests"]
+pythonpath = ["services", "backend"]
+testpaths = ["services/tests", "backend/tests"]
+# importlib mode lets services/tests and backend/tests each have their own conftest.py
+addopts = "--import-mode=importlib"

@@ -60,6 +60,28 @@ services:
     depends_on:
       gateway: {condition: service_healthy}
 
+  # Incident itself. Deliberately no depends_on: a monitor must keep running when the
+  # services it watches are down.
+  backend:
+    build: ./backend
+    environment:
+      GATEWAY_URL: http://gateway:8000
+      ORDER_URL: http://order:8000
+      PAYMENT_URL: http://payment:8000
+      INVENTORY_URL: http://inventory:8000
+      AWS_REGION: ${AWS_REGION:-us-east-2}
+      INCIDENT_AWS_PROFILE: ${AWS_PROFILE:-}  # from .env; empty means default credentials
+    volumes:
+      # Reuse your local `aws login` session. Writable so the SDK can refresh it.
+      - ~/.aws:/home/appuser/.aws
+    ports: ["127.0.0.1:8000:8000"]
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/health', timeout=2)"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+      start_period: 10s
+
   postgres:
     image: postgres:17-alpine
     environment:
