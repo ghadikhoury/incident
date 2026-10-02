@@ -1,8 +1,8 @@
-# Sentinel
+# Incident
 
 Incident detection, diagnosis and response for distributed systems.
 
-Sentinel watches a set of microservices, detects failures through AWS CloudWatch, groups related alarms into a single incident, works out which service failed first, and uses an LLM (through Amazon Bedrock) to suggest a root cause and remediation. An engineer approves or rejects each suggestion before anything runs.
+Incident watches a set of microservices, detects failures through AWS CloudWatch, groups related alarms into a single incident, works out which service failed first, and uses an LLM (through Amazon Bedrock) to suggest a root cause and remediation. An engineer approves or rejects each suggestion before anything runs.
 
 > Status: early development. See the roadmap below.
 
@@ -15,7 +15,7 @@ services (Docker on EC2) ──logs/metrics──▶ CloudWatch ──alarm─�
                                        S3 (evidence)        ◀────────────────────┤
                                        SQS ◀─────────────────────────────────────┘
                                         │
-                              Sentinel backend (FastAPI) ──WebSocket──▶ Dashboard (React)
+                              Incident backend (FastAPI) ──WebSocket──▶ Dashboard (React)
                                         │
                                      Bedrock (diagnosis)
 ```
@@ -24,7 +24,7 @@ services (Docker on EC2) ──logs/metrics──▶ CloudWatch ──alarm─�
 
 1. [ ] Project setup and AWS account
 2. [ ] Simulated microservices + failure injection (local)
-3. [ ] Sentinel backend + live dashboard
+3. [ ] Incident backend + live dashboard
 4. [ ] Deploy to EC2
 5. [ ] CloudWatch detection
 6. [ ] Lambda incident pipeline (DynamoDB, S3, SQS)
@@ -40,3 +40,5 @@ Requirements: Python 3.12, Node 20+, Docker Desktop, AWS CLI v2.
 ```bash
 cp .env.example .env   # then fill in values
 ```
+
+Full build plan: [docs/PLAN.md](docs/PLAN.md)
