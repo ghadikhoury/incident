@@ -18,6 +18,7 @@ from fastapi import Response
 from psycopg_pool import ConnectionPool, PoolTimeout
 from pydantic import BaseModel, Field, model_validator
 
+from common import chaos
 from common.app import create_app
 from common.errors import ServiceError
 
@@ -55,7 +56,13 @@ async def lifespan(app):
     pool.close()
 
 
-app = create_app("payment", lifespan=lifespan)
+app = create_app("payment", supports_db_chaos=True, lifespan=lifespan)
+
+
+def _injected_db_delay(conn) -> None:
+    """Chaos: make the query slow inside Postgres, so it holds its pooled connection."""
+    if chaos.state.db_delay_s:
+        conn.execute("SELECT pg_sleep(%s)", (chaos.state.db_delay_s,))
 
 
 class PaymentIn(BaseModel):
@@ -107,6 +114,7 @@ def create_payment(body: PaymentIn, response: Response):
     """Charge an order. 201 for a new payment, 200 if this order was already charged."""
     try:
         with pool.connection() as conn:
+            _injected_db_delay(conn)
             row = conn.execute(
                 "INSERT INTO payments (order_id, amount, item_id, quantity, status) "
                 "VALUES (%s, %s, %s, %s, 'captured') "
@@ -146,6 +154,7 @@ def _find(column: Literal["id", "order_id"], value, not_found: str) -> dict:
     # column is one of two fixed names (never user input); the value is a bound parameter.
     try:
         with pool.connection() as conn:
+            _injected_db_delay(conn)
             row = conn.execute(
                 f"SELECT {COLUMNS} FROM payments WHERE {column} = %s", (value,)
             ).fetchone()

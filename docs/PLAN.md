@@ -89,9 +89,10 @@ Incident is meant to be a genuine, usable product (startup-style), built on AWS 
 ## Repo layout
 ```
 incident/
-├── services/            gateway/ order/ payment/ inventory/   (each: app.py, Dockerfile)
-│   └── common/          shared logging + trace-id + failure-injection helpers
-├── loadgen/             steady fake traffic so metrics always have data
+├── services/            one Dockerfile; gateway/ order/ payment/ inventory/ (each: app.py)
+│   ├── common/          shared logging + trace-id + failure injection (/chaos)
+│   ├── loadgen/         steady fake traffic so metrics always have data
+│   └── tests/
 ├── backend/             Incident FastAPI app (api/, correlation/, severity/, diagnosis/, ws/)
 ├── lambdas/incident_processor/
 ├── frontend/            React + TS dashboard
@@ -118,8 +119,8 @@ Each step = one branch + one PR. For each step Claude explains what we're doing,
 - 4 FastAPI services (gateway → order → payment → postgres, order → inventory) + Postgres + load generator in `docker-compose.yml` with health checks.
 - Shared `common` module: JSON logs with `timestamp, service, trace_id, endpoint, status_code, latency_ms, error_type, error_message`, and a `X-Trace-Id` header passed along on every call.
 - **Failure injection** via `POST /chaos` on each service. Failures are *real* where possible:
-  - `db_slow`: Payment's queries call `pg_sleep`, so its small connection pool (size 5) actually runs out and you get real "pool exhausted" errors that cascade to Order.
-  - `latency`, `error_rate` (e.g. 40% 500s), and `crash` (`docker stop`).
+  - `db_delay_s`: Payment's queries call `pg_sleep`, so its small connection pool (size 5) actually runs out and you get real "pool exhausted" errors that cascade to Order.
+  - `latency_ms`, `error_rate` (e.g. 40% 500s), and `crash` (process exits; `docker compose start` recovers).
 - **Done when:** `docker compose up` shows steady traffic, and turning on `db_slow` makes payment and then order logs fill with timeouts.
 
 ### Step 3: Incident backend + live dashboard (local, real DynamoDB)
