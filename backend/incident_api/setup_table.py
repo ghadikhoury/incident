@@ -15,6 +15,7 @@ Indexes (both sort newest first by gsi1sk = "<created_at>#<id>"):
 import time
 
 import boto3
+from botocore.exceptions import ClientError
 
 from incident_api import config
 
@@ -52,7 +53,9 @@ def ensure_table(client, table_name: str) -> str:
             BillingMode="PAY_PER_REQUEST",
         )
     except client.exceptions.ResourceInUseException:
-        return _add_missing_indexes(client, table_name)
+        index_result = _add_missing_indexes(client, table_name)
+        backfilled = _backfill_active_incidents(client, table_name)
+        return f"{index_result}; backfilled {backfilled} active incidents"
     client.get_waiter("table_exists").wait(TableName=table_name)
     return "created"
 
@@ -60,17 +63,70 @@ def ensure_table(client, table_name: str) -> str:
 def _add_missing_indexes(client, table_name: str) -> str:
     table = client.describe_table(TableName=table_name)["Table"]
     existing = {i["IndexName"] for i in table.get("GlobalSecondaryIndexes", [])}
+    known_attributes = {a["AttributeName"] for a in table["AttributeDefinitions"]}
     missing = [i for i in INDEXES if i["IndexName"] not in existing]
     for index in missing:  # DynamoDB allows one index creation per update
+        new_attributes = [
+            attribute
+            for attribute in ATTRIBUTES
+            if attribute["AttributeName"] in {key["AttributeName"] for key in index["KeySchema"]}
+            and attribute["AttributeName"] not in known_attributes
+        ]
         client.update_table(
             TableName=table_name,
-            AttributeDefinitions=ATTRIBUTES,
             GlobalSecondaryIndexUpdates=[{"Create": index}],
+            **({"AttributeDefinitions": new_attributes} if new_attributes else {}),
         )
         _wait_for_index(client, table_name, index["IndexName"])
+        known_attributes.update(a["AttributeName"] for a in new_attributes)
     if missing:
         return "added indexes: " + ", ".join(i["IndexName"] for i in missing)
     return "already up to date"
+
+
+def _backfill_active_incidents(client, table_name: str) -> int:
+    """Repair pre-index META rows. Safe to rerun after an interrupted migration.
+
+    The conditional update cannot resurrect an incident resolved after the scan read it.
+    Scan pagination is necessary because DynamoDB limits each page to 1 MB.
+    """
+    count = 0
+    start_key = None
+    while True:
+        page = client.scan(
+            TableName=table_name,
+            FilterExpression="#sk = :meta AND attribute_not_exists(active_pk)",
+            ProjectionExpression="pk, #sk, #status",
+            ExpressionAttributeNames={"#sk": "sk", "#status": "status"},
+            ExpressionAttributeValues={":meta": {"S": "META"}},
+            **({"ExclusiveStartKey": start_key} if start_key else {}),
+        )
+        for item in page["Items"]:
+            if item.get("status", {}).get("S") not in {"OPEN", "ACKNOWLEDGED"}:
+                continue
+            try:
+                client.update_item(
+                    TableName=table_name,
+                    Key={"pk": item["pk"], "sk": item["sk"]},
+                    UpdateExpression="SET active_pk = :active",
+                    ConditionExpression=(
+                        "attribute_exists(pk) AND attribute_not_exists(active_pk) "
+                        "AND #status IN (:open, :acknowledged)"
+                    ),
+                    ExpressionAttributeNames={"#status": "status"},
+                    ExpressionAttributeValues={
+                        ":active": {"S": "ACTIVE"},
+                        ":open": {"S": "OPEN"},
+                        ":acknowledged": {"S": "ACKNOWLEDGED"},
+                    },
+                )
+                count += 1
+            except ClientError as exc:
+                if exc.response["Error"]["Code"] != "ConditionalCheckFailedException":
+                    raise
+        start_key = page.get("LastEvaluatedKey")
+        if not start_key:
+            return count
 
 
 def _wait_for_index(client, table_name: str, index_name: str, timeout_s: float = 600) -> None:

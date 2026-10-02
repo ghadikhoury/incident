@@ -80,12 +80,16 @@ Every request is logged as one JSON line (`service`, `trace_id`, `endpoint`, `st
 
 The backend (`backend/incident_api`, port 8000) stores incidents in DynamoDB, polls every service's health every 3 s, and pushes changes to dashboards over a WebSocket.
 
-One-time setup: log in (`aws login --profile incident`) and create the table:
+Log in (`aws login --profile incident`) and create or upgrade the table:
 
 ```bash
 cd backend && INCIDENT_AWS_PROFILE=incident python -m incident_api.setup_table
 # PowerShell: cd backend; $env:INCIDENT_AWS_PROFILE="incident"; python -m incident_api.setup_table
 ```
+
+Run the setup command again when upgrading an existing table. It adds missing indexes and
+backfills preexisting OPEN and ACKNOWLEDGED incidents into the active index. The backfill
+is safe to rerun after an interruption and does not add resolved incidents.
 
 `docker compose up` runs the backend with your `~/.aws` folder mounted, using the profile named by `AWS_PROFILE` in `.env`. If AWS calls start failing, your 12-hour login expired: run `aws login --profile incident` again.
 
