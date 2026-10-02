@@ -5,7 +5,7 @@ import httpx
 import pytest
 from moto import mock_aws
 
-from incident_api.setup_table import create_table
+from incident_api.setup_table import ensure_table
 from incident_api.store import IncidentStore
 
 REGION = "us-east-2"
@@ -18,7 +18,7 @@ def store(monkeypatch):
         monkeypatch.setenv(key, "testing")
     monkeypatch.delenv("AWS_PROFILE", raising=False)
     with mock_aws():
-        create_table(boto3.client("dynamodb", region_name=REGION), "test-incidents")
+        ensure_table(boto3.client("dynamodb", region_name=REGION), "test-incidents")
         table = boto3.resource("dynamodb", region_name=REGION).Table("test-incidents")
         yield IncidentStore(table)
 

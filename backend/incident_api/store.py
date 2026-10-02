@@ -13,6 +13,7 @@ from incident_api import config
 from incident_api.models import Incident, IncidentCreate, Status, TimelineEvent
 
 LIST_LIMIT = 200
+ACTIVE = "ACTIVE"
 
 
 class NotFound(Exception):
@@ -52,9 +53,16 @@ def _to_incident(item: dict) -> Incident:
     return Incident.model_validate(item)
 
 
+Event = tuple[str, str]  # (kind, message) of a timeline entry
+
+
 class IncidentStore:
+    """Every change to an incident is written in one DynamoDB transaction together with
+    its timeline events, so the incident and its audit trail can never disagree."""
+
     def __init__(self, table):
         self.table = table
+        self.client = table.meta.client  # converts plain Python values like the table does
 
     @classmethod
     def from_config(cls) -> "IncidentStore":
@@ -75,35 +83,53 @@ class IncidentStore:
             updated_at=now,
         )
         item = {k: v for k, v in incident.model_dump(mode="json").items() if v is not None}
-        item |= {"pk": _pk(incident.incident_id), "sk": "META", "gsi1pk": "INCIDENT"}
-        item["gsi1sk"] = f"{now}#{incident.incident_id}"  # unique even if created_at ties
-        self.table.put_item(Item=item, ConditionExpression="attribute_not_exists(pk)")
-        self.add_event(
-            incident.incident_id, "created", f"Incident created: {data.title}", data.actor
-        )
+        item |= {
+            "pk": _pk(incident.incident_id),
+            "sk": "META",
+            "gsi1pk": "INCIDENT",
+            "gsi1sk": f"{now}#{incident.incident_id}",  # unique even if created_at ties
+            "active_pk": ACTIVE,
+        }
+        put = {"Put": {"TableName": self.table.name, "Item": item}}
+        put["Put"]["ConditionExpression"] = "attribute_not_exists(pk)"
+        created = ("created", f"Incident created: {data.title}")
+        self._transact([put, *self._event_puts(incident.incident_id, [created], data.actor)])
         return incident
 
     def get(self, incident_id: str) -> Incident | None:
-        item = self.table.get_item(Key={"pk": _pk(incident_id), "sk": "META"}).get("Item")
+        item = self.table.get_item(
+            Key={"pk": _pk(incident_id), "sk": "META"}, ConsistentRead=True
+        ).get("Item")
         return _to_incident(item) if item else None
 
     def list_incidents(self, active_only: bool = False) -> list[Incident]:
-        """Newest first. Only the most recent LIST_LIMIT incidents are considered."""
-        response = self.table.query(
-            IndexName="by-created",
-            KeyConditionExpression=Key("gsi1pk").eq("INCIDENT"),
-            ScanIndexForward=False,
-            Limit=LIST_LIMIT,
-        )
-        incidents = [_to_incident(item) for item in response["Items"]]
+        """Newest first. Active incidents are always complete (read from the sparse
+        active index); the full list is capped at the newest LIST_LIMIT incidents."""
         if active_only:
-            incidents = [i for i in incidents if i.status != Status.RESOLVED]
-        return incidents
+            items = self._query_all(
+                IndexName="active-by-created",
+                KeyConditionExpression=Key("active_pk").eq(ACTIVE),
+                ScanIndexForward=False,
+            )
+        else:
+            items = self.table.query(
+                IndexName="by-created",
+                KeyConditionExpression=Key("gsi1pk").eq("INCIDENT"),
+                ScanIndexForward=False,
+                Limit=LIST_LIMIT,
+            )["Items"]
+        return [_to_incident(item) for item in items]
 
     def update(
-        self, incident_id: str, changes: dict, *, require_status: Status | None = None
+        self,
+        incident_id: str,
+        changes: dict,
+        events: list[Event],
+        actor: str | None,
+        *,
+        require_status: Status | None = None,
     ) -> Incident:
-        """Apply field changes (a value of None removes the field).
+        """Apply field changes (None removes a field) and record events, atomically.
 
         Resolved incidents can't be changed. If require_status is given, the incident must
         currently be in that status. Raises NotFound or Conflict.
@@ -118,6 +144,7 @@ class IncidentStore:
                 sets[field] = str(value)
         if sets.get("status") == Status.RESOLVED:
             sets["resolved_at"] = now
+            removes.append("active_pk")  # drops out of the active index
 
         names = {f"#{f}": f for f in [*sets, *removes, "status"]}
         values = {f":{f}": v for f, v in sets.items()} | {":resolved": Status.RESOLVED.value}
@@ -129,44 +156,68 @@ class IncidentStore:
             condition += " AND #status = :required"
             values[":required"] = require_status.value
 
-        try:
-            response = self.table.update_item(
-                Key={"pk": _pk(incident_id), "sk": "META"},
-                UpdateExpression=expression,
-                ConditionExpression=condition,
-                ExpressionAttributeNames=names,
-                ExpressionAttributeValues=values,
-                ReturnValues="ALL_NEW",
-            )
-        except ClientError as exc:
-            if exc.response["Error"]["Code"] != "ConditionalCheckFailedException":
-                raise
-            current = self.get(incident_id)
-            if current is None:
-                raise NotFound(incident_id) from exc
-            raise Conflict(f"{incident_id} is {current.status}") from exc
-        return _to_incident(response["Attributes"])
-
-    def add_event(self, incident_id: str, kind: str, message: str, actor: str | None) -> None:
-        now = _unique_now()
-        at = now.isoformat(timespec="milliseconds")
-        sort_time = now.isoformat(timespec="microseconds")  # keeps quick successive events in order
-        item = {
-            "pk": _pk(incident_id),
-            "sk": f"EVENT#{sort_time}#{uuid.uuid4().hex[:8]}",
-            "at": at,
-            "kind": kind,
-            "message": message,
+        update = {
+            "Update": {
+                "TableName": self.table.name,
+                "Key": {"pk": _pk(incident_id), "sk": "META"},
+                "UpdateExpression": expression,
+                "ConditionExpression": condition,
+                "ExpressionAttributeNames": names,
+                "ExpressionAttributeValues": values,
+            }
         }
-        if actor:
-            item["actor"] = actor
-        self.table.put_item(Item=item)
+        try:
+            self._transact([update, *self._event_puts(incident_id, events, actor)])
+        except ClientError as exc:
+            reasons = [r.get("Code") for r in exc.response.get("CancellationReasons", [])]
+            if reasons[:1] == ["ConditionalCheckFailed"]:
+                current = self.get(incident_id)
+                if current is None:
+                    raise NotFound(incident_id) from exc
+                raise Conflict(f"{incident_id} is {current.status}") from exc
+            if "TransactionConflict" in reasons:
+                raise Conflict(f"{incident_id} is being changed by someone else; retry") from exc
+            raise
+        incident = self.get(incident_id)
+        assert incident is not None  # it existed a moment ago and incidents are never deleted
+        return incident
 
     def timeline(self, incident_id: str) -> list[TimelineEvent]:
         response = self.table.query(
             KeyConditionExpression=Key("pk").eq(_pk(incident_id)) & Key("sk").begins_with("EVENT#")
         )
         return [TimelineEvent.model_validate(item) for item in response["Items"]]
+
+    def _event_puts(self, incident_id: str, events: list[Event], actor: str | None) -> list:
+        puts = []
+        for kind, message in events:
+            now = _unique_now()
+            sort_time = now.isoformat(timespec="microseconds")  # keeps quick events in order
+            item = {
+                "pk": _pk(incident_id),
+                "sk": f"EVENT#{sort_time}#{uuid.uuid4().hex[:8]}",
+                "at": now.isoformat(timespec="milliseconds"),
+                "kind": kind,
+                "message": message,
+            }
+            if actor:
+                item["actor"] = actor
+            puts.append({"Put": {"TableName": self.table.name, "Item": item}})
+        return puts
+
+    def _transact(self, items: list[dict]) -> None:
+        self.client.transact_write_items(TransactItems=items)
+
+    def _query_all(self, **query) -> list[dict]:
+        items, start_key = [], None
+        while True:
+            page = self.table.query(
+                **query, **({"ExclusiveStartKey": start_key} if start_key else {})
+            )
+            items.extend(page["Items"])
+            start_key = page.get("LastEvaluatedKey")
+            if not start_key:
+                return items
 
     def _next_id(self) -> str:
         response = self.table.update_item(

@@ -67,14 +67,12 @@ def create_app(
     ) -> Incident:
         try:
             incident = await run_in_threadpool(
-                store.update, incident_id, changes, require_status=require_status
+                store.update, incident_id, changes, events, actor, require_status=require_status
             )
         except NotFound as exc:
             raise HTTPException(404, f"incident {incident_id} not found") from exc
         except Conflict as exc:
             raise HTTPException(409, str(exc)) from exc
-        for kind, message in events:
-            await run_in_threadpool(store.add_event, incident_id, kind, message, actor)
         await broadcast_incident(incident)
         return incident
 
