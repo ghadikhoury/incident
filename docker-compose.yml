@@ -1,0 +1,68 @@
+# The simulated company that Incident monitors.
+#   gateway -> order -> inventory
+#                    -> payment -> postgres
+#
+# Ports are bound to 127.0.0.1 so they are only reachable from this machine.
+
+x-service: &service
+  build: ./services
+  healthcheck:
+    test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health', timeout=2)"]
+    interval: 10s
+    timeout: 3s
+    retries: 3
+    start_period: 10s
+
+services:
+  gateway:
+    <<: *service
+    command: ["uvicorn", "gateway.app:app", "--host", "0.0.0.0", "--port", "8000", "--no-access-log"]
+    environment:
+      ORDER_URL: http://order:8000
+    ports: ["127.0.0.1:8090:8000"]
+    depends_on:
+      order: {condition: service_healthy}
+
+  order:
+    <<: *service
+    command: ["uvicorn", "order.app:app", "--host", "0.0.0.0", "--port", "8000", "--no-access-log"]
+    environment:
+      INVENTORY_URL: http://inventory:8000
+      PAYMENT_URL: http://payment:8000
+    ports: ["127.0.0.1:8091:8000"]
+    depends_on:
+      inventory: {condition: service_healthy}
+      payment: {condition: service_healthy}
+
+  payment:
+    <<: *service
+    command: ["uvicorn", "payment.app:app", "--host", "0.0.0.0", "--port", "8000", "--no-access-log"]
+    environment:
+      DATABASE_URL: postgresql://incident:incident@postgres:5432/payments
+      POOL_SIZE: "5"
+    ports: ["127.0.0.1:8092:8000"]
+    depends_on:
+      postgres: {condition: service_healthy}
+
+  inventory:
+    <<: *service
+    command: ["uvicorn", "inventory.app:app", "--host", "0.0.0.0", "--port", "8000", "--no-access-log"]
+    ports: ["127.0.0.1:8093:8000"]
+
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      # Local simulation only; never reuse these credentials anywhere real.
+      POSTGRES_USER: incident
+      POSTGRES_PASSWORD: incident
+      POSTGRES_DB: payments
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U incident -d payments"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+volumes:
+  pgdata:

@@ -16,9 +16,29 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - run: pip install ruff pytest
+      - run: pip install -r requirements-dev.txt
       - name: Lint
-        run: ruff check .
+        run: ruff check . && ruff format --check .
       - name: Test
-        # Exit code 5 means "no tests collected", which is fine until code exists.
-        run: pytest || [ $? -eq 5 ]
+        run: pytest
+
+  compose-smoke:
+    # Boots the whole system and runs the integration tests against it.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Start services
+        run: docker compose up -d --build --wait
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Integration tests against the running stack
+        run: |
+          pip install pytest==9.1.1 httpx==0.28.1
+          pytest integration -v
+      - name: Show logs on failure
+        if: failure()
+        run: docker compose logs
+      - name: Stop services
+        if: always()
+        run: docker compose down -v
