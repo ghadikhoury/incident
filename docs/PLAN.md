@@ -11,15 +11,15 @@ Incident is meant to be a genuine, usable product (startup-style), built on AWS 
 
 ## Where we are (update as we go)
 
-**Step 1 (in progress)**
+**Step 1: done ✅**
 - [x] Python 3.12 (added to PATH), AWS CLI v2.37.8, Docker Desktop 4.93.0 installed
-- [x] Repo skeleton + CI. PR #1 open: https://github.com/ghadikhoury/incident/pull/1
+- [x] Repo skeleton + CI (PR #1): https://github.com/ghadikhoury/incident/pull/1
 - [x] Installed WSL 2, Docker Desktop running, `docker run hello-world` works
-- [x] AWS project **Incident** created (account `494883819144`, us-east-2)
+- [x] AWS project **Incident** created (us-east-2)
 - [x] MFA turned on in AWS Settings
 - [x] `aws login --profile incident` works (sessions last 12 h; re-run the command when it expires)
 - [x] Budget `incident-monthly-20`: $20/month, counts usage *before* credits, emails at 50/80/100% actual + 100% forecast
-- [ ] Merge PR #1, then turn on branch protection for `main`
+- [x] PR #1 merged, branch protection on `main` (CI must pass)
 
 ---
 
@@ -183,6 +183,12 @@ Each step = one branch + one PR. For each step Claude explains what we're doing,
 - **Stage 1 complete.** Stage 2 (RAG, LangGraph, MCP, agents) only starts after this.
 
 ---
+
+## Team workflow
+- **Claude** writes the code for each step on a feature branch and opens the PR(s).
+- **A second AI reviewer (OpenAI)** reviews each PR and merges it if it's good.
+- **Ghadi** directs the work, does anything involving AWS accounts or billing, and has final say.
+- `main` is protected: a PR can only merge when CI passes. Use **squash merge** and delete the branch afterwards.
 
 ## Pull requests while working alone: **yes, lightweight ones**
 - **Workflow:** `git switch -c step-3-backend` → small commits → `gh pr create` → CI runs tests → read your own diff in the GitHub UI (Claude can also run a code review on it) → **squash-merge** → delete the branch. No required approvals.

@@ -22,7 +22,7 @@ services (Docker on EC2) ──logs/metrics──▶ CloudWatch ──alarm─�
 
 ## Roadmap
 
-1. [ ] Project setup and AWS account
+1. [x] Project setup and AWS account
 2. [ ] Simulated microservices + failure injection (local)
 3. [ ] Incident backend + live dashboard
 4. [ ] Deploy to EC2
