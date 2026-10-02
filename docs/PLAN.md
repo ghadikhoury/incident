@@ -15,10 +15,10 @@ Incident is meant to be a genuine, usable product (startup-style), built on AWS 
 - [x] Python 3.12 (added to PATH), AWS CLI v2.37.8, Docker Desktop 4.93.0 installed
 - [x] Repo skeleton + CI. PR #1 open: https://github.com/ghadikhoury/incident/pull/1
 - [x] Installed WSL 2, Docker Desktop running, `docker run hello-world` works
-- [ ] Create AWS project named **incident** at https://settings.aws.com
-- [ ] Turn on MFA in AWS Settings
-- [ ] `aws login --profile incident` → `aws sts get-caller-identity --profile incident`
-- [ ] Create the $20 monthly budget alert (Claude does this via the CLI once logged in)
+- [x] AWS project **Incident** created (account `494883819144`, us-east-2)
+- [x] MFA turned on in AWS Settings
+- [x] `aws login --profile incident` works (sessions last 12 h; re-run the command when it expires)
+- [x] Budget `incident-monthly-20`: $20/month, counts usage *before* credits, emails at 50/80/100% actual + 100% forecast
 - [ ] Merge PR #1, then turn on branch protection for `main`
 
 ---
