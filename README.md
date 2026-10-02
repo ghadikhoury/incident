@@ -76,6 +76,17 @@ Ports: gateway 8090, order 8091, payment 8092, inventory 8093. Chaos changes are
 
 Every request is logged as one JSON line (`service`, `trace_id`, `endpoint`, `status_code`, `latency_ms`, `error_type`, ...). Send an `x-trace-id` header (or let the gateway generate one) to follow a request across services.
 
+### Dashboard
+
+`docker compose up -d --build --wait`, then open **http://localhost:3000**. It shows overall system health, each service's live status (with any injected failure), active incidents with acknowledge/resolve, and a simulation panel to break things and declare incidents. Everything updates live over a WebSocket; no refresh needed. Type your name in the top bar so your actions are attributed in incident timelines.
+
+To work on the dashboard with hot reload, keep the stack running and:
+
+```bash
+cd frontend && npm install && npm run dev   # http://localhost:5173, proxies /api to :8000
+npm run lint && npm test && npm run build   # what CI runs
+```
+
 ### Incident backend
 
 The backend (`backend/incident_api`, port 8000) stores incidents in DynamoDB, polls every service's health every 3 s, and pushes changes to dashboards over a WebSocket.

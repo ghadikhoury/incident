@@ -22,6 +22,26 @@ jobs:
       - name: Test
         run: pytest
 
+  frontend:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - run: npm ci --no-audit --no-fund
+      - name: Lint
+        run: npm run lint
+      - name: Test
+        run: npm test
+      - name: Type-check and build
+        run: npm run build
+
   compose-smoke:
     # Boots the whole system and runs the integration tests against it.
     runs-on: ubuntu-latest
@@ -39,6 +59,10 @@ jobs:
           done
           curl -sS localhost:8000/api/services
           exit 1
+      - name: Dashboard is served and proxies the API
+        run: |
+          curl -fsS localhost:3000/ | grep -q '<title>Incident</title>'
+          curl -fsS localhost:3000/api/health
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
