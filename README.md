@@ -71,8 +71,9 @@ pytest integration                                # against a running `docker co
 
 ### Order consistency
 
-If payment fails, the order service compensates in the background: it voids the payment and releases the reserved stock, retrying with backoff for about a minute. Both calls are idempotent on `order_id`:
-- Payment has a unique `order_id`. A repeated charge returns the existing payment instead of charging twice. A void leaves a `voided` row, so a slow charge that lands afterwards is rejected (`409 PaymentVoided`).
-- Inventory tracks reservations per `order_id`, so a retried reserve or release has no extra effect.
+An order exists exactly when payment has captured a charge for its `order_id`. Nothing else holds state that a failure could leave half-done: inventory only quotes prices.
+
+- **Idempotent orders.** Clients may send their own `order_id`. Retrying the same order never charges twice: the retry returns the original order with `200`, and reusing an id for a *different* order is a `409 IdempotencyConflict`.
+- **Unknown outcomes resolve themselves.** A request that times out may still have been charged (the payment was being written when the caller gave up). `GET /orders/{order_id}` asks payment for the truth, so such an order appears as `confirmed` once its charge has landed and is a `404` if it never was.
 
 Full build plan: [docs/PLAN.md](docs/PLAN.md)

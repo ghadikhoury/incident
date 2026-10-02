@@ -8,139 +8,132 @@ from common.errors import ServiceError
 client = TestClient(order_app.app)
 
 TIMEOUT = ServiceError(504, "DependencyTimeout", "payment did not respond")
-
-
-class InlineExecutor:
-    """Runs submitted work immediately, so background compensation is deterministic in tests."""
-
-    def submit(self, fn, *args):
-        fn(*args)
+PAYMENT = {"payment_id": 7, "amount": 30.0, "created_at": "2026-10-02T12:00:00+00:00"}
 
 
 @pytest.fixture
 def downstream(monkeypatch):
-    """Fake inventory/payment. Each endpoint maps to a list of results consumed in order
-    (the last one repeats); a result is an httpx.Response or a ServiceError to raise."""
+    """Fake inventory/payment, keyed by URL path prefix. A result is an httpx.Response or a
+    ServiceError to raise. Records every call as (method, path, json)."""
     results = {
-        "/inventory/reserve": [httpx.Response(200, json={"unit_price": 10.0})],
-        "/payments": [httpx.Response(201, json={"payment_id": 7})],
-        "/payments/void": [httpx.Response(200, json={"status": "voided"})],
-        "/inventory/release": [httpx.Response(200, json={"released": True})],
+        "/inventory/quote": httpx.Response(200, json={"unit_price": 10.0, "total": 30.0}),
+        "/payments": httpx.Response(201, json=PAYMENT),
+        "/payments/by-order/": httpx.Response(404, json={"error": "PaymentNotFound"}),
     }
     calls = []
 
     def fake_call(method, url, *, dependency, timeout, json=None):
         path = httpx.URL(url).path
-        calls.append((path, json))
-        queue = results[path]
-        result = queue.pop(0) if len(queue) > 1 else queue[0]
+        calls.append((method, path, json))
+        key = "/payments/by-order/" if path.startswith("/payments/by-order/") else path
+        result = results[key]
         if isinstance(result, ServiceError):
             raise result
         return result
 
     monkeypatch.setattr(order_app, "call", fake_call)
-    monkeypatch.setattr(order_app, "_compensations", InlineExecutor())
-    monkeypatch.setattr(order_app.time, "sleep", lambda seconds: None)
     return results, calls
 
 
-def paths(calls):
-    return [path for path, _ in calls]
+def place(order_id=None, item_id="sku-1", quantity=3):
+    body = {"item_id": item_id, "quantity": quantity}
+    if order_id:
+        body["order_id"] = order_id
+    return client.post("/orders", json=body)
 
 
 def test_create_order_happy_path(downstream):
     _, calls = downstream
-    response = client.post("/orders", json={"item_id": "sku-1", "quantity": 3})
+    response = place()
     assert response.status_code == 201
-    body = response.json()
-    assert body["amount"] == 30.0
-    assert body["payment_id"] == 7
-    assert client.get(f"/orders/{body['order_id']}").json() == body
-    assert paths(calls) == ["/inventory/reserve", "/payments"]
+    order = response.json()
+    assert order["amount"] == 30.0
+    assert order["payment_id"] == 7
+    assert order["status"] == "confirmed"
+    assert client.get(f"/orders/{order['order_id']}").json() == order
+    assert [path for _, path, _ in calls] == ["/inventory/quote", "/payments"]
 
 
-def test_reservation_and_payment_share_the_order_id(downstream):
+def test_client_order_id_is_the_payment_idempotency_key(downstream):
     _, calls = downstream
-    order_id = client.post("/orders", json={"item_id": "sku-1", "quantity": 1}).json()["order_id"]
-    assert [body["order_id"] for _, body in calls] == [order_id, order_id]
+    order = place(order_id="client-key-1").json()
+    assert order["order_id"] == "client-key-1"
+    assert calls[1][2] == {"order_id": "client-key-1", "amount": 30.0}
 
 
-def test_payment_timeout_voids_payment_and_releases_stock(downstream):
-    results, calls = downstream
-    results["/payments"] = [TIMEOUT]
-    response = client.post("/orders", json={"item_id": "sku-1", "quantity": 1})
+def test_retrying_a_paid_order_returns_200_with_the_same_payment(downstream):
+    results, _ = downstream
+    results["/payments"] = httpx.Response(200, json=PAYMENT)  # payment: already charged
+    response = place(order_id="client-key-2")
+    assert response.status_code == 200
+    assert response.json()["payment_id"] == 7
+
+
+def test_payment_timeout_propagates(downstream):
+    results, _ = downstream
+    results["/payments"] = TIMEOUT
+    response = place()
     assert response.status_code == 504
     assert response.json()["error"] == "DependencyTimeout"
-    assert paths(calls) == [
-        "/inventory/reserve",
-        "/payments",
-        "/payments/void",
-        "/inventory/release",
-    ]
-    order_id = calls[0][1]["order_id"]
-    assert calls[2][1] == {"order_id": order_id}
-    assert calls[3][1] == {"order_id": order_id}
 
 
-def test_rejected_payment_is_compensated(downstream):
-    results, calls = downstream
-    results["/payments"] = [httpx.Response(409, json={"error": "PaymentVoided"})]
-    response = client.post("/orders", json={"item_id": "sku-1", "quantity": 1})
-    assert response.status_code == 502
-    assert response.json()["error"] == "PaymentRejected"
-    assert paths(calls)[-2:] == ["/payments/void", "/inventory/release"]
+def test_timed_out_order_is_confirmed_once_its_charge_lands(downstream):
+    """The outcome of a timed-out order is unknown, not failed: payment has the truth."""
+    results, _ = downstream
+    results["/payments"] = TIMEOUT
+    place(order_id="late-charge", quantity=3)
+
+    # The slow charge hasn't landed: the order doesn't exist (yet).
+    assert client.get("/orders/late-charge").status_code == 404
+
+    # Later the charge commits: the order is confirmed, with the details we recorded.
+    results["/payments/by-order/"] = httpx.Response(200, json=PAYMENT)
+    order = client.get("/orders/late-charge").json()
+    assert order["status"] == "confirmed"
+    assert order["payment_id"] == 7
+    assert (order["item_id"], order["quantity"]) == ("sku-1", 3)
 
 
-def test_compensation_retries_until_dependencies_recover(downstream):
-    results, calls = downstream
-    results["/payments"] = [TIMEOUT]
-    results["/payments/void"] = [TIMEOUT, TIMEOUT, httpx.Response(200, json={})]
-    results["/inventory/release"] = [TIMEOUT, httpx.Response(200, json={})]
-    client.post("/orders", json={"item_id": "sku-1", "quantity": 1})
-    assert paths(calls).count("/payments/void") == 3
-    assert paths(calls).count("/inventory/release") == 2
+def test_order_unknown_to_this_process_is_resolved_from_payment(downstream):
+    results, _ = downstream
+    results["/payments/by-order/"] = httpx.Response(200, json=PAYMENT)
+    order = client.get("/orders/from-before-a-restart").json()
+    assert order["status"] == "confirmed"
+    assert order["item_id"] is None  # details were only in the old process's memory
 
 
-def test_stock_is_released_even_if_void_never_succeeds(downstream):
-    results, calls = downstream
-    results["/payments"] = [TIMEOUT]
-    results["/payments/void"] = [TIMEOUT]
-    client.post("/orders", json={"item_id": "sku-1", "quantity": 1})
-    attempts = 1 + len(order_app.COMPENSATION_BACKOFF_S)
-    assert paths(calls).count("/payments/void") == attempts
-    assert paths(calls)[-1] == "/inventory/release"
-
-
-def test_compensation_does_not_retry_client_errors(downstream):
-    results, calls = downstream
-    results["/payments"] = [TIMEOUT]
-    results["/payments/void"] = [httpx.Response(422, json={})]
-    client.post("/orders", json={"item_id": "sku-1", "quantity": 1})
-    assert paths(calls).count("/payments/void") == 1
-
-
-def test_reservation_timeout_releases_without_voiding(downstream):
-    results, calls = downstream
-    results["/inventory/reserve"] = [ServiceError(504, "DependencyTimeout", "slow")]
-    response = client.post("/orders", json={"item_id": "sku-1", "quantity": 1})
-    assert response.status_code == 504
-    assert paths(calls) == ["/inventory/reserve", "/inventory/release"]
-
-
-def test_out_of_stock_needs_no_compensation(downstream):
-    results, calls = downstream
-    results["/inventory/reserve"] = [
-        httpx.Response(409, json={"error": "OutOfStock", "message": "not enough stock"})
-    ]
-    response = client.post("/orders", json={"item_id": "sku-1", "quantity": 1})
+def test_idempotency_conflict_is_passed_through(downstream):
+    results, _ = downstream
+    results["/payments"] = httpx.Response(
+        409, json={"error": "IdempotencyConflict", "message": "different amount"}
+    )
+    response = place(order_id="reused-key")
     assert response.status_code == 409
-    assert response.json()["error"] == "OutOfStock"
-    assert paths(calls) == ["/inventory/reserve"]
+    assert response.json()["error"] == "IdempotencyConflict"
 
 
-def test_unknown_order_is_404():
+def test_unknown_item_is_passed_through_without_charging(downstream):
+    results, calls = downstream
+    results["/inventory/quote"] = httpx.Response(
+        404, json={"error": "ItemNotFound", "message": "unknown item nope"}
+    )
+    response = place(item_id="nope")
+    assert response.status_code == 404
+    assert response.json()["error"] == "ItemNotFound"
+    assert [path for _, path, _ in calls] == ["/inventory/quote"]
+
+
+def test_unknown_order_is_404(downstream):
     assert client.get("/orders/nope").status_code == 404
 
 
-def test_invalid_quantity_is_rejected():
-    assert client.post("/orders", json={"item_id": "sku-1", "quantity": 0}).status_code == 422
+@pytest.mark.parametrize(
+    "body",
+    [
+        {"item_id": "sku-1", "quantity": 0},
+        {"item_id": "sku-1", "quantity": 1, "order_id": "has spaces"},
+        {"item_id": "sku-1", "quantity": 1, "order_id": "x" * 65},
+    ],
+)
+def test_invalid_orders_are_rejected(downstream, body):
+    assert client.post("/orders", json=body).status_code == 422

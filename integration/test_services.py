@@ -12,7 +12,6 @@ import pytest
 
 GATEWAY = os.getenv("GATEWAY_URL", "http://localhost:8090")
 PAYMENT = os.getenv("PAYMENT_URL", "http://localhost:8092")
-INVENTORY = os.getenv("INVENTORY_URL", "http://localhost:8093")
 
 
 @pytest.fixture(scope="module")
@@ -25,52 +24,43 @@ def new_order_id() -> str:
     return f"it-{uuid.uuid4().hex[:12]}"
 
 
-def stock(http, item_id: str) -> int:
-    return http.get(f"{INVENTORY}/inventory/{item_id}").json()["stock"]
-
-
-def test_order_through_gateway_reserves_stock_and_charges(http):
-    before = stock(http, "sku-4")
+def test_order_through_gateway_charges_payment(http):
     response = http.post(f"{GATEWAY}/orders", json={"item_id": "sku-4", "quantity": 2})
     assert response.status_code == 201, response.text
     order = response.json()
-    assert order["amount"] == 240.0
-    assert stock(http, "sku-4") <= before - 2  # loadgen (if running) may also order sku-4
-    payment = http.get(f"{PAYMENT}/payments/{order['payment_id']}").json()
-    assert payment["order_id"] == order["order_id"]
-    assert payment["status"] == "captured"
+    assert (order["amount"], order["status"]) == (240.0, "confirmed")
+    payment = http.get(f"{PAYMENT}/payments/by-order/{order['order_id']}").json()
+    assert payment["payment_id"] == order["payment_id"]
+    assert http.get(f"{GATEWAY}/orders/{order['order_id']}").json() == order
+
+
+def test_retrying_an_order_does_not_charge_twice(http):
+    body = {"item_id": "sku-1", "quantity": 2, "order_id": new_order_id()}
+    first = http.post(f"{GATEWAY}/orders", json=body)
+    retry = http.post(f"{GATEWAY}/orders", json=body)
+    assert (first.status_code, retry.status_code) == (201, 200)
+    assert retry.json()["payment_id"] == first.json()["payment_id"]
+
+
+def test_reusing_an_order_id_for_a_different_order_is_rejected(http):
+    order_id = new_order_id()
+    http.post(f"{GATEWAY}/orders", json={"item_id": "sku-1", "quantity": 1, "order_id": order_id})
+    response = http.post(
+        f"{GATEWAY}/orders", json={"item_id": "sku-4", "quantity": 1, "order_id": order_id}
+    )
+    assert response.status_code == 409
+    assert response.json()["error"] == "IdempotencyConflict"
 
 
 def test_payment_retry_does_not_charge_twice(http):
-    order_id = new_order_id()
-    body = {"order_id": order_id, "amount": 19.98}
+    body = {"order_id": new_order_id(), "amount": 19.98}
     first = http.post(f"{PAYMENT}/payments", json=body)
     retry = http.post(f"{PAYMENT}/payments", json=body)
     assert (first.status_code, retry.status_code) == (201, 200)
     assert retry.json()["payment_id"] == first.json()["payment_id"]
 
 
-def test_payment_retry_with_a_different_amount_is_rejected(http):
-    order_id = new_order_id()
-    http.post(f"{PAYMENT}/payments", json={"order_id": order_id, "amount": 10.0})
-    response = http.post(f"{PAYMENT}/payments", json={"order_id": order_id, "amount": 99.0})
-    assert response.status_code == 409
-    assert response.json()["error"] == "IdempotencyConflict"
-
-
-def test_void_before_a_late_charge_blocks_the_charge(http):
-    order_id = new_order_id()
-    voided = http.post(f"{PAYMENT}/payments/void", json={"order_id": order_id})
-    assert voided.json()["status"] == "voided"
-    late = http.post(f"{PAYMENT}/payments", json={"order_id": order_id, "amount": 10.0})
-    assert late.status_code == 409
-    assert late.json()["error"] == "PaymentVoided"
-
-
-def test_void_after_charge_is_idempotent(http):
-    order_id = new_order_id()
-    charged = http.post(f"{PAYMENT}/payments", json={"order_id": order_id, "amount": 10.0}).json()
-    first = http.post(f"{PAYMENT}/payments/void", json={"order_id": order_id}).json()
-    second = http.post(f"{PAYMENT}/payments/void", json={"order_id": order_id}).json()
-    assert first["payment_id"] == second["payment_id"] == charged["payment_id"]
-    assert second["status"] == "voided"
+def test_unknown_order_is_404(http):
+    response = http.get(f"{GATEWAY}/orders/{new_order_id()}")
+    assert response.status_code == 404
+    assert response.json()["error"] == "OrderNotFound"
