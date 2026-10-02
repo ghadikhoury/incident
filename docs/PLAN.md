@@ -14,7 +14,7 @@ Incident is meant to be a genuine, usable product (startup-style), built on AWS 
 **Step 1 (in progress)**
 - [x] Python 3.12 (added to PATH), AWS CLI v2.37.8, Docker Desktop 4.93.0 installed
 - [x] Repo skeleton + CI. PR #1 open: https://github.com/ghadikhoury/incident/pull/1
-- [ ] Restart PC → open Docker Desktop → `docker run hello-world`
+- [x] Installed WSL 2, Docker Desktop running, `docker run hello-world` works
 - [ ] Create AWS project named **incident** at https://settings.aws.com
 - [ ] Turn on MFA in AWS Settings
 - [ ] `aws login --profile incident` → `aws sts get-caller-identity --profile incident`
