@@ -1,0 +1,20 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "IncidentTableReadWrite",
+      "Effect": "Allow",
+      "Action": [
+        "dynamodb:GetItem",
+        "dynamodb:PutItem",
+        "dynamodb:UpdateItem",
+        "dynamodb:ConditionCheckItem",
+        "dynamodb:Query"
+      ],
+      "Resource": [
+        "arn:aws:dynamodb:us-east-2:ACCOUNT_ID:table/incident-store",
+        "arn:aws:dynamodb:us-east-2:ACCOUNT_ID:table/incident-store/index/*"
+      ]
+    }
+  ]
+}
