@@ -73,7 +73,7 @@ pytest integration                                # against a running `docker co
 
 An order exists exactly when payment has captured a charge for its `order_id`. Nothing else holds state that a failure could leave half-done: inventory only quotes prices.
 
-- **Idempotent orders.** Clients may send their own `order_id`. Retrying the same order never charges twice: the retry returns the original order with `200`, and reusing an id for a *different* order is a `409 IdempotencyConflict`.
-- **Unknown outcomes resolve themselves.** A request that times out may still have been charged (the payment was being written when the caller gave up). `GET /orders/{order_id}` asks payment for the truth, so such an order appears as `confirmed` once its charge has landed and is a `404` if it never was.
+- **Idempotent orders.** Clients may send their own `order_id`. Payment durably records the item, quantity, and amount with the charge. Retrying the same order never charges twice: the retry returns the original order with `200`, and reusing an id for a different item, quantity, or amount is a `409 IdempotencyConflict`, even if two orders have the same total.
+- **Unknown outcomes resolve themselves.** A request that times out may still have been charged (the payment was being written when the caller gave up). `GET /orders/{order_id}` asks payment for the truth and retrieves the original item and quantity after an order-service restart, so such an order appears as `confirmed` once its charge has landed and is a `404` if it never was. The payment schema upgrade adds nullable identity columns to existing tables; charges recorded before this upgrade cannot recover item and quantity that were never stored.
 
 Full build plan: [docs/PLAN.md](docs/PLAN.md)

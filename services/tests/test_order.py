@@ -21,6 +21,7 @@ def downstream(monkeypatch):
         "/payments/by-order/": httpx.Response(404, json={"error": "PaymentNotFound"}),
     }
     calls = []
+    payments = {}
 
     def fake_call(method, url, *, dependency, timeout, json=None):
         path = httpx.URL(url).path
@@ -29,6 +30,19 @@ def downstream(monkeypatch):
         result = results[key]
         if isinstance(result, ServiceError):
             raise result
+        if path == "/payments" and result.status_code in (200, 201):
+            payment = {**result.json(), **json}
+            payments[json["order_id"]] = payment
+            return httpx.Response(result.status_code, json=payment)
+        if key == "/payments/by-order/":
+            order_id = path.rsplit("/", 1)[-1]
+            if result.status_code == 200:
+                return httpx.Response(
+                    200,
+                    json={**result.json(), "order_id": order_id, "item_id": "sku-1", "quantity": 3},
+                )
+            if order_id in payments:
+                return httpx.Response(200, json=payments[order_id])
         return result
 
     monkeypatch.setattr(order_app, "call", fake_call)
@@ -51,14 +65,20 @@ def test_create_order_happy_path(downstream):
     assert order["payment_id"] == 7
     assert order["status"] == "confirmed"
     assert client.get(f"/orders/{order['order_id']}").json() == order
-    assert [path for _, path, _ in calls] == ["/inventory/quote", "/payments"]
+    assert [path for _, path, _ in calls[:2]] == ["/inventory/quote", "/payments"]
+    assert calls[2][1] == f"/payments/by-order/{order['order_id']}"
 
 
 def test_client_order_id_is_the_payment_idempotency_key(downstream):
     _, calls = downstream
     order = place(order_id="client-key-1").json()
     assert order["order_id"] == "client-key-1"
-    assert calls[1][2] == {"order_id": "client-key-1", "amount": 30.0}
+    assert calls[1][2] == {
+        "order_id": "client-key-1",
+        "amount": 30.0,
+        "item_id": "sku-1",
+        "quantity": 3,
+    }
 
 
 def test_retrying_a_paid_order_returns_200_with_the_same_payment(downstream):
@@ -99,7 +119,7 @@ def test_order_unknown_to_this_process_is_resolved_from_payment(downstream):
     results["/payments/by-order/"] = httpx.Response(200, json=PAYMENT)
     order = client.get("/orders/from-before-a-restart").json()
     assert order["status"] == "confirmed"
-    assert order["item_id"] is None  # details were only in the old process's memory
+    assert (order["item_id"], order["quantity"]) == ("sku-1", 3)
 
 
 def test_idempotency_conflict_is_passed_through(downstream):

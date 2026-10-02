@@ -16,7 +16,7 @@ from typing import Literal
 import psycopg
 from fastapi import Response
 from psycopg_pool import ConnectionPool, PoolTimeout
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 from common.app import create_app
 from common.errors import ServiceError
@@ -39,10 +39,15 @@ async def lifespan(app):
                    id SERIAL PRIMARY KEY,
                    order_id TEXT NOT NULL,
                    amount NUMERIC(10, 2) NOT NULL,
+                   item_id TEXT,
+                   quantity INTEGER,
                    status TEXT NOT NULL,
                    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
                )"""
         )
+        # Existing installations predate order identity in the payment record.
+        conn.execute("ALTER TABLE payments ADD COLUMN IF NOT EXISTS item_id TEXT")
+        conn.execute("ALTER TABLE payments ADD COLUMN IF NOT EXISTS quantity INTEGER")
         conn.execute(
             "CREATE UNIQUE INDEX IF NOT EXISTS payments_order_id_key ON payments (order_id)"
         )
@@ -56,9 +61,17 @@ app = create_app("payment", lifespan=lifespan)
 class PaymentIn(BaseModel):
     order_id: str = Field(min_length=1, max_length=64)
     amount: float = Field(gt=0)
+    item_id: str | None = Field(default=None, min_length=1)
+    quantity: int | None = Field(default=None, gt=0, le=100)
+
+    @model_validator(mode="after")
+    def complete_order_identity(self):
+        if (self.item_id is None) != (self.quantity is None):
+            raise ValueError("item_id and quantity must be supplied together")
+        return self
 
 
-COLUMNS = "id, order_id, amount, status, created_at"
+COLUMNS = "id, order_id, amount, item_id, quantity, status, created_at"
 
 
 def _payment(row) -> dict:
@@ -66,8 +79,10 @@ def _payment(row) -> dict:
         "payment_id": row[0],
         "order_id": row[1],
         "amount": float(row[2]),
-        "status": row[3],
-        "created_at": row[4].isoformat(),
+        "item_id": row[3],
+        "quantity": row[4],
+        "status": row[5],
+        "created_at": row[6].isoformat(),
     }
 
 
@@ -93,9 +108,10 @@ def create_payment(body: PaymentIn, response: Response):
     try:
         with pool.connection() as conn:
             row = conn.execute(
-                "INSERT INTO payments (order_id, amount, status) VALUES (%s, %s, 'captured') "
+                "INSERT INTO payments (order_id, amount, item_id, quantity, status) "
+                "VALUES (%s, %s, %s, %s, 'captured') "
                 f"ON CONFLICT (order_id) DO NOTHING RETURNING {COLUMNS}",
-                (body.order_id, body.amount),
+                (body.order_id, body.amount, body.item_id, body.quantity),
             ).fetchone()
             if row is None:  # already charged: this is a retry
                 row = conn.execute(
@@ -105,9 +121,13 @@ def create_payment(body: PaymentIn, response: Response):
     except (PoolTimeout, psycopg.Error) as exc:
         raise _db_error(exc) from exc
     payment = _payment(row)
-    if payment["amount"] != round(body.amount, 2):
+    if (
+        payment["amount"] != round(body.amount, 2)
+        or payment["item_id"] != body.item_id
+        or payment["quantity"] != body.quantity
+    ):
         raise ServiceError(
-            409, "IdempotencyConflict", f"order {body.order_id} was charged a different amount"
+            409, "IdempotencyConflict", f"order {body.order_id} has different order details"
         )
     return payment
 

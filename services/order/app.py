@@ -12,10 +12,7 @@ order_id, so there is no separate state that a failure could leave half-done.
 """
 
 import os
-import threading
 import uuid
-from collections import OrderedDict
-from datetime import UTC, datetime
 
 import httpx
 from fastapi import Response
@@ -29,13 +26,7 @@ INVENTORY_URL = os.getenv("INVENTORY_URL", "http://localhost:8093")
 PAYMENT_URL = os.getenv("PAYMENT_URL", "http://localhost:8092")
 INVENTORY_TIMEOUT = float(os.getenv("INVENTORY_TIMEOUT", "2.0"))
 PAYMENT_TIMEOUT = float(os.getenv("PAYMENT_TIMEOUT", "3.0"))
-MAX_CACHED_ORDERS = 10_000
-
 app = create_app("order")
-
-# Cache of orders this process has seen. Payment remains the source of truth.
-_orders: OrderedDict[str, dict] = OrderedDict()
-_lock = threading.Lock()
 
 
 class OrderIn(BaseModel):
@@ -64,27 +55,21 @@ def create_order(body: OrderIn, response: Response):
     _raise_unless_ok(quote, "QuoteFailed")
     amount = quote.json()["total"]
 
-    order = {
-        "order_id": order_id,
-        "item_id": body.item_id,
-        "quantity": body.quantity,
-        "amount": amount,
-        "payment_id": None,
-        "status": "pending",  # not an order until payment confirms the charge
-        "created_at": datetime.now(UTC).isoformat(),
-    }
-    _remember(order)
-
     payment = call(
         "POST",
         f"{PAYMENT_URL}/payments",
-        json={"order_id": order_id, "amount": amount},
+        json={
+            "order_id": order_id,
+            "amount": amount,
+            "item_id": body.item_id,
+            "quantity": body.quantity,
+        },
         dependency="payment",
         timeout=PAYMENT_TIMEOUT,
     )
     _raise_unless_ok(payment, "PaymentFailed")
 
-    confirmed = _confirm(order, payment.json())
+    confirmed = _confirm(payment.json())
     if payment.status_code == 200:
         response.status_code = 200
     return confirmed
@@ -92,11 +77,7 @@ def create_order(body: OrderIn, response: Response):
 
 @app.get("/orders/{order_id}")
 def get_order(order_id: str):
-    with _lock:
-        order = _orders.get(order_id)
-    if order and order["status"] == "confirmed":
-        return order
-    # Unknown or still pending here: payment knows whether the charge actually landed.
+    # Payment is the durable source of both the charge and the order identity.
     payment = call(
         "GET",
         f"{PAYMENT_URL}/payments/by-order/{order_id}",
@@ -106,28 +87,19 @@ def get_order(order_id: str):
     if payment.status_code == 404:
         raise ServiceError(404, "OrderNotFound", f"no order {order_id}")
     _raise_unless_ok(payment, "PaymentLookupFailed")
-    details = order or {"order_id": order_id, "item_id": None, "quantity": None}
-    return _confirm(details, payment.json())
+    return _confirm(payment.json())
 
 
-def _confirm(order: dict, payment: dict) -> dict:
-    confirmed = {
-        **order,
+def _confirm(payment: dict) -> dict:
+    return {
+        "order_id": payment["order_id"],
+        "item_id": payment["item_id"],
+        "quantity": payment["quantity"],
         "amount": payment["amount"],
         "payment_id": payment["payment_id"],
         "status": "confirmed",
-        "created_at": order.get("created_at") or payment["created_at"],
+        "created_at": payment["created_at"],
     }
-    _remember(confirmed)
-    return confirmed
-
-
-def _remember(order: dict) -> None:
-    with _lock:
-        _orders[order["order_id"]] = order
-        _orders.move_to_end(order["order_id"])
-        if len(_orders) > MAX_CACHED_ORDERS:
-            _orders.popitem(last=False)
 
 
 def _raise_unless_ok(response: httpx.Response, fallback_error: str) -> None:

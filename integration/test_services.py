@@ -52,6 +52,24 @@ def test_reusing_an_order_id_for_a_different_order_is_rejected(http):
     assert response.json()["error"] == "IdempotencyConflict"
 
 
+def test_same_amount_different_items_conflict_and_canonical_details_survive(http):
+    order_id = new_order_id()
+    first = http.post(
+        f"{GATEWAY}/orders", json={"item_id": "sku-2", "quantity": 17, "order_id": order_id}
+    )
+    assert first.status_code == 201, first.text
+    # Both quotes total 416.50, so amount alone cannot define an order's identity.
+    conflict = http.post(
+        f"{GATEWAY}/orders", json={"item_id": "sku-3", "quantity": 98, "order_id": order_id}
+    )
+    assert conflict.status_code == 409, conflict.text
+    assert conflict.json()["error"] == "IdempotencyConflict"
+    order = http.get(f"{GATEWAY}/orders/{order_id}")
+    assert order.status_code == 200, order.text
+    assert (order.json()["item_id"], order.json()["quantity"]) == ("sku-2", 17)
+    assert order.json()["payment_id"] == first.json()["payment_id"]
+
+
 def test_payment_retry_does_not_charge_twice(http):
     body = {"order_id": new_order_id(), "amount": 19.98}
     first = http.post(f"{PAYMENT}/payments", json=body)
