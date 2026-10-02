@@ -8,45 +8,55 @@ from common.errors import ServiceError
 client = TestClient(order_app.app)
 
 TIMEOUT = ServiceError(504, "DependencyTimeout", "payment did not respond")
-PAYMENT = {"payment_id": 7, "amount": 30.0, "created_at": "2026-10-02T12:00:00+00:00"}
+CREATED_AT = "2026-10-02T12:00:00+00:00"
+
+
+def stored_payment(order_id: str, item_id="sku-1", quantity=3, amount=30.0) -> dict:
+    """A payment row as payment stores it: the charge plus the order's identity."""
+    return {
+        "payment_id": 7,
+        "order_id": order_id,
+        "amount": amount,
+        "item_id": item_id,
+        "quantity": quantity,
+        "status": "captured",
+        "created_at": CREATED_AT,
+    }
 
 
 @pytest.fixture
 def downstream(monkeypatch):
-    """Fake inventory/payment, keyed by URL path prefix. A result is an httpx.Response or a
-    ServiceError to raise. Records every call as (method, path, json)."""
-    results = {
-        "/inventory/quote": httpx.Response(200, json={"unit_price": 10.0, "total": 30.0}),
-        "/payments": httpx.Response(201, json=PAYMENT),
-        "/payments/by-order/": httpx.Response(404, json={"error": "PaymentNotFound"}),
-    }
+    """Fake inventory and payment. Payment keeps an in-memory table (``payments``), so
+    lookups return exactly what was stored. ``results`` overrides a path's response with an
+    httpx.Response or a ServiceError to raise. Every call is recorded as (method, path, json).
+    """
+    results = {}
+    payments: dict[str, dict] = {}
     calls = []
-    payments = {}
 
     def fake_call(method, url, *, dependency, timeout, json=None):
         path = httpx.URL(url).path
         calls.append((method, path, json))
-        key = "/payments/by-order/" if path.startswith("/payments/by-order/") else path
-        result = results[key]
-        if isinstance(result, ServiceError):
-            raise result
-        if path == "/payments" and result.status_code in (200, 201):
-            payment = {**result.json(), **json}
-            payments[json["order_id"]] = payment
-            return httpx.Response(result.status_code, json=payment)
-        if key == "/payments/by-order/":
+        if path in results:
+            if isinstance(results[path], ServiceError):
+                raise results[path]
+            return results[path]
+        if path == "/inventory/quote":
+            return httpx.Response(200, json={"unit_price": 10.0, "total": 30.0})
+        if path == "/payments":
+            if json["order_id"] in payments:
+                return httpx.Response(200, json=payments[json["order_id"]])
+            payments[json["order_id"]] = stored_payment(**json)
+            return httpx.Response(201, json=payments[json["order_id"]])
+        if path.startswith("/payments/by-order/"):
             order_id = path.rsplit("/", 1)[-1]
-            if result.status_code == 200:
-                return httpx.Response(
-                    200,
-                    json={**result.json(), "order_id": order_id, "item_id": "sku-1", "quantity": 3},
-                )
             if order_id in payments:
                 return httpx.Response(200, json=payments[order_id])
-        return result
+            return httpx.Response(404, json={"error": "PaymentNotFound"})
+        raise AssertionError(f"unexpected call {method} {path}")
 
     monkeypatch.setattr(order_app, "call", fake_call)
-    return results, calls
+    return results, payments, calls
 
 
 def place(order_id=None, item_id="sku-1", quantity=3):
@@ -57,7 +67,7 @@ def place(order_id=None, item_id="sku-1", quantity=3):
 
 
 def test_create_order_happy_path(downstream):
-    _, calls = downstream
+    _, _, calls = downstream
     response = place()
     assert response.status_code == 201
     order = response.json()
@@ -66,11 +76,10 @@ def test_create_order_happy_path(downstream):
     assert order["status"] == "confirmed"
     assert client.get(f"/orders/{order['order_id']}").json() == order
     assert [path for _, path, _ in calls[:2]] == ["/inventory/quote", "/payments"]
-    assert calls[2][1] == f"/payments/by-order/{order['order_id']}"
 
 
-def test_client_order_id_is_the_payment_idempotency_key(downstream):
-    _, calls = downstream
+def test_payment_receives_the_full_order_identity(downstream):
+    _, _, calls = downstream
     order = place(order_id="client-key-1").json()
     assert order["order_id"] == "client-key-1"
     assert calls[1][2] == {
@@ -82,15 +91,14 @@ def test_client_order_id_is_the_payment_idempotency_key(downstream):
 
 
 def test_retrying_a_paid_order_returns_200_with_the_same_payment(downstream):
-    results, _ = downstream
-    results["/payments"] = httpx.Response(200, json=PAYMENT)  # payment: already charged
-    response = place(order_id="client-key-2")
-    assert response.status_code == 200
-    assert response.json()["payment_id"] == 7
+    first = place(order_id="client-key-2")
+    retry = place(order_id="client-key-2")
+    assert (first.status_code, retry.status_code) == (201, 200)
+    assert retry.json() == first.json()
 
 
 def test_payment_timeout_propagates(downstream):
-    results, _ = downstream
+    results, _, _ = downstream
     results["/payments"] = TIMEOUT
     response = place()
     assert response.status_code == 504
@@ -99,31 +107,33 @@ def test_payment_timeout_propagates(downstream):
 
 def test_timed_out_order_is_confirmed_once_its_charge_lands(downstream):
     """The outcome of a timed-out order is unknown, not failed: payment has the truth."""
-    results, _ = downstream
+    results, payments, _ = downstream
     results["/payments"] = TIMEOUT
-    place(order_id="late-charge", quantity=3)
+    place(order_id="late-charge", item_id="sku-2", quantity=5)
 
     # The slow charge hasn't landed: the order doesn't exist (yet).
     assert client.get("/orders/late-charge").status_code == 404
 
-    # Later the charge commits: the order is confirmed, with the details we recorded.
-    results["/payments/by-order/"] = httpx.Response(200, json=PAYMENT)
+    # Later the charge commits, with the identity payment was sent.
+    payments["late-charge"] = stored_payment("late-charge", item_id="sku-2", quantity=5)
     order = client.get("/orders/late-charge").json()
     assert order["status"] == "confirmed"
-    assert order["payment_id"] == 7
-    assert (order["item_id"], order["quantity"]) == ("sku-1", 3)
+    assert (order["item_id"], order["quantity"]) == ("sku-2", 5)
 
 
-def test_order_unknown_to_this_process_is_resolved_from_payment(downstream):
-    results, _ = downstream
-    results["/payments/by-order/"] = httpx.Response(200, json=PAYMENT)
+def test_order_lookup_needs_no_local_state(downstream):
+    """The order service keeps nothing in memory, so a restart loses nothing."""
+    _, payments, _ = downstream
+    payments["from-before-a-restart"] = stored_payment(
+        "from-before-a-restart", item_id="sku-4", quantity=2, amount=240.0
+    )
     order = client.get("/orders/from-before-a-restart").json()
     assert order["status"] == "confirmed"
-    assert (order["item_id"], order["quantity"]) == ("sku-1", 3)
+    assert (order["item_id"], order["quantity"], order["amount"]) == ("sku-4", 2, 240.0)
 
 
 def test_idempotency_conflict_is_passed_through(downstream):
-    results, _ = downstream
+    results, _, _ = downstream
     results["/payments"] = httpx.Response(
         409, json={"error": "IdempotencyConflict", "message": "different amount"}
     )
@@ -133,7 +143,7 @@ def test_idempotency_conflict_is_passed_through(downstream):
 
 
 def test_unknown_item_is_passed_through_without_charging(downstream):
-    results, calls = downstream
+    results, _, calls = downstream
     results["/inventory/quote"] = httpx.Response(
         404, json={"error": "ItemNotFound", "message": "unknown item nope"}
     )
