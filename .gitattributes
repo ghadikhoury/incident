@@ -1,0 +1,4 @@
+# Use LF line endings everywhere so scripts work inside Linux containers and on EC2.
+* text=auto eol=lf
+*.png binary
+*.jpg binary
