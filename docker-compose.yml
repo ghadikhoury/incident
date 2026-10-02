@@ -82,6 +82,18 @@ services:
       retries: 3
       start_period: 10s
 
+  # The dashboard: http://localhost:3000 (nginx serves the React build and proxies /api).
+  frontend:
+    build: ./frontend
+    ports: ["127.0.0.1:3000:80"]
+    depends_on:
+      backend: {condition: service_started}
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1/"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+
   postgres:
     image: postgres:17-alpine
     environment:
