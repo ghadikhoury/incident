@@ -1,7 +1,7 @@
 """Failure scenarios end to end, against the running compose stack.
 
-Payment's queries are slowed to 3 s, so its 5-connection pool runs out under concurrent
-load. That must surface as PoolTimeout in payment and as timeouts/errors in order and the
+Payment's queries are slowed by DB_DELAY_S, so its 5-connection pool runs out under
+concurrent load. That must surface as PoolTimeout in payment and as timeouts/errors in order and the
 gateway, and every order whose outcome was unknown must resolve to the truth afterwards.
 
 The load generator is paused during this module so its traffic doesn't skew the results.
@@ -19,6 +19,9 @@ import pytest
 GATEWAY = os.getenv("GATEWAY_URL", "http://127.0.0.1:8090")
 ORDER = os.getenv("ORDER_URL", "http://127.0.0.1:8091")
 PAYMENT = os.getenv("PAYMENT_URL", "http://127.0.0.1:8092")
+# Clearly longer than order's 3 s payment timeout. With exactly 3 s, whether a slow charge
+# beats the timeout comes down to milliseconds and the assertions below would be flaky.
+DB_DELAY_S = 4
 
 
 def compose(*args: str) -> None:
@@ -73,7 +76,7 @@ def healthy_system(http):
 
 @pytest.fixture
 def slow_database(http):
-    http.post(f"{PAYMENT}/chaos", json={"db_delay_s": 3}).raise_for_status()
+    http.post(f"{PAYMENT}/chaos", json={"db_delay_s": DB_DELAY_S}).raise_for_status()
     yield
     http.delete(f"{PAYMENT}/chaos").raise_for_status()
     wait_until(lambda: healthy(http, PAYMENT), "payment healthy")
@@ -125,9 +128,13 @@ def test_timed_out_orders_resolve_to_the_truth(http):
     even after the order service restarts and forgets what it saw."""
     order_ids = [f"it-{uuid.uuid4().hex[:12]}" for _ in range(8)]
 
-    http.post(f"{PAYMENT}/chaos", json={"db_delay_s": 3}).raise_for_status()
+    http.post(f"{PAYMENT}/chaos", json={"db_delay_s": DB_DELAY_S}).raise_for_status()
+    started = time.monotonic()
     concurrently(8, lambda i: http.post(f"{GATEWAY}/orders", json=order_body(order_ids[i])))
     http.delete(f"{PAYMENT}/chaos").raise_for_status()
+    # Clearing chaos doesn't cancel queries already sleeping in Postgres: let every charge
+    # that got a connection finish before comparing, or one could land mid-comparison.
+    time.sleep(max(0.0, started + DB_DELAY_S + 2 - time.monotonic()))
     wait_until(lambda: healthy(http, PAYMENT), "payment healthy")
 
     def check_against_payment() -> set[int]:
