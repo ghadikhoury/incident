@@ -1,0 +1,31 @@
+# Secrets: never commit these
+.env
+.env.*
+!.env.example
+*.pem
+.aws/
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+*.egg-info/
+
+# Node / frontend
+node_modules/
+dist/
+build/
+
+# AWS CDK
+cdk.out/
+
+# Editors / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
