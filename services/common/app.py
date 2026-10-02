@@ -6,6 +6,7 @@ import uuid
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
+from common import chaos
 from common.context import RequestContext, current, reset_current, set_current
 from common.errors import ServiceError
 from common.logs import get_logger, setup_logging
@@ -14,10 +15,11 @@ TRACE_HEADER = "x-trace-id"
 QUIET_PATHS = {"/health"}  # polled constantly; logging them would drown out real traffic
 
 
-def create_app(service: str, **kwargs) -> FastAPI:
+def create_app(service: str, *, supports_db_chaos: bool = False, **kwargs) -> FastAPI:
     setup_logging(service)
     log = get_logger()
     app = FastAPI(title=service, **kwargs)
+    app.include_router(chaos.router(supports_db_delay=supports_db_chaos))
 
     @app.exception_handler(ServiceError)
     async def handle_service_error(request: Request, exc: ServiceError):
@@ -37,7 +39,11 @@ def create_app(service: str, **kwargs) -> FastAPI:
         start = time.perf_counter()
         try:
             try:
-                response = await call_next(request)
+                response = None
+                if request.url.path not in chaos.EXEMPT_PATHS:
+                    response = await chaos.apply(ctx)
+                if response is None:
+                    response = await call_next(request)
             except Exception:
                 log.exception("unhandled error")
                 ctx.error_type = ctx.error_type or "InternalServerError"

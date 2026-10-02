@@ -58,6 +58,22 @@ docker compose down                     # stop (add -v to also wipe the database
 | payment | 8092 | postgres |
 | inventory | 8093 | none |
 
+`loadgen` sends about 5 requests/second through the gateway and prints a traffic summary every 10 s (`docker compose logs -f loadgen`).
+
+### Break things on purpose
+
+Every service has a `/chaos` endpoint. Settings combine; `DELETE /chaos` restores normal behaviour.
+
+| Failure | Command | What happens |
+|---|---|---|
+| Slow database | `curl -X POST localhost:8092/chaos -H 'content-type: application/json' -d '{"db_delay_s": 3}'` | Payment queries hold their connections for 3 s, the 5-connection pool runs out (`PoolTimeout`), order times out (`DependencyTimeout`), the gateway returns 502s |
+| Latency | `... localhost:8092/chaos ... -d '{"latency_ms": 3000}'` | Every payment request takes 3 s longer |
+| Error rate | `... localhost:8093/chaos ... -d '{"error_rate": 0.4}'` | 40% of inventory requests fail with HTTP 500 |
+| Crash | `... localhost:8092/chaos ... -d '{"crash": true}'` | Payment exits; order gets `DependencyUnavailable`. Restart with `docker compose start payment` |
+| Recover | `curl -X DELETE localhost:8092/chaos` | Back to normal |
+
+Ports: gateway 8090, order 8091, payment 8092, inventory 8093. Chaos changes are logged as `"message": "chaos updated"`, so they can be excluded from the evidence Incident analyses.
+
 Every request is logged as one JSON line (`service`, `trace_id`, `endpoint`, `status_code`, `latency_ms`, `error_type`, ...). Send an `x-trace-id` header (or let the gateway generate one) to follow a request across services.
 
 ### Tests

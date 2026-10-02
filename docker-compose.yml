@@ -2,6 +2,8 @@
 #   gateway -> order -> inventory
 #                    -> payment -> postgres
 #
+#   loadgen sends steady traffic to gateway.
+#
 # Ports are bound to 127.0.0.1 so they are only reachable from this machine.
 
 x-service: &service
@@ -48,6 +50,15 @@ services:
     <<: *service
     command: ["uvicorn", "inventory.app:app", "--host", "0.0.0.0", "--port", "8000", "--no-access-log"]
     ports: ["127.0.0.1:8093:8000"]
+
+  loadgen:
+    build: ./services
+    command: ["python", "-m", "loadgen.main"]
+    environment:
+      GATEWAY_URL: http://gateway:8000
+      RATE: "5"
+    depends_on:
+      gateway: {condition: service_healthy}
 
   postgres:
     image: postgres:17-alpine
