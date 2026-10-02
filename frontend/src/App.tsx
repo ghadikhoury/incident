@@ -32,18 +32,22 @@ function saveActor(actor: string) {
 }
 
 export default function App() {
-  const { services, incidents, connection, loadError } = useLiveData()
+  const { services, incidents, connection, loadError, applyIncident, reloadServices } = useLiveData()
   const now = useNow()
   const [actor, setActor] = useState(loadActor)
   const [busy, setBusy] = useState(false)
   const [actionError, setActionError] = useState<string | null>(null)
 
-  // Runs a user action; the dashboard itself updates from the WebSocket push.
-  const run = async (action: () => Promise<unknown>): Promise<boolean> => {
+  // Apply successful responses immediately, including when the live socket is offline.
+  const run = async <T,>(
+    action: () => Promise<T>,
+    onSuccess?: (result: T) => void | Promise<void>,
+  ): Promise<boolean> => {
     setBusy(true)
     setActionError(null)
     try {
-      await action()
+      const result = await action()
+      await onSuccess?.(result)
       return true
     } catch (error) {
       setActionError((error as Error).message)
@@ -93,8 +97,8 @@ export default function App() {
             incidents={incidents}
             now={now}
             busy={busy}
-            onAcknowledge={(id) => run(() => api.acknowledge(id, actor))}
-            onResolve={(id) => run(() => api.resolve(id, actor))}
+            onAcknowledge={(id) => run(() => api.acknowledge(id, actor), applyIncident)}
+            onResolve={(id) => run(() => api.resolve(id, actor), applyIncident)}
           />
           <ServiceList services={services} />
         </div>
@@ -102,11 +106,11 @@ export default function App() {
           services={services}
           busy={busy}
           onInject={(service, failure: FailureType) =>
-            run(() => api.injectFailure(service, failure))
+            run(() => api.injectFailure(service, failure), reloadServices)
           }
-          onRecover={(service) => run(() => api.recover(service))}
+          onRecover={(service) => run(() => api.recover(service), reloadServices)}
           onDeclare={(incident: NewIncident) =>
-            run(() => api.createIncident({ ...incident, actor: actor || undefined }))
+            run(() => api.createIncident({ ...incident, actor: actor || undefined }), applyIncident)
           }
         />
       </main>

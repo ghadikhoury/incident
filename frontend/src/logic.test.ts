@@ -92,6 +92,13 @@ describe('upsertIncident', () => {
       ['INC-1001', 'RESOLVED'],
     ])
   })
+
+  it('does not replace a successful action with an older delayed socket event', () => {
+    const acknowledged = incident('INC-1001', '2026-10-02T12:00:00Z', 'ACKNOWLEDGED')
+    acknowledged.updated_at = '2026-10-02T12:01:00Z'
+    const stale = incident('INC-1001', '2026-10-02T12:00:00Z')
+    expect(upsertIncident([acknowledged], stale)).toEqual([acknowledged])
+  })
 })
 
 describe('mergeIncidents', () => {

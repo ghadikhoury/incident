@@ -25,6 +25,8 @@ export function formatAge(fromIso: string, now: number): string {
 
 /** Insert or replace an incident, keeping the list newest first. */
 export function upsertIncident(incidents: Incident[], incident: Incident): Incident[] {
+  const existing = incidents.find((i) => i.incident_id === incident.incident_id)
+  if (existing && existing.updated_at > incident.updated_at) return incidents
   const others = incidents.filter((i) => i.incident_id !== incident.incident_id)
   return [incident, ...others].sort((a, b) => b.created_at.localeCompare(a.created_at))
 }
