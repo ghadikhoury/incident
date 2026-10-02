@@ -10,8 +10,8 @@ import uuid
 import httpx
 import pytest
 
-GATEWAY = os.getenv("GATEWAY_URL", "http://localhost:8090")
-PAYMENT = os.getenv("PAYMENT_URL", "http://localhost:8092")
+GATEWAY = os.getenv("GATEWAY_URL", "http://127.0.0.1:8090")
+PAYMENT = os.getenv("PAYMENT_URL", "http://127.0.0.1:8092")
 
 
 @pytest.fixture(scope="module")
