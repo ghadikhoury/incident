@@ -2,12 +2,17 @@
 
 The pool is deliberately small (POOL_SIZE) so that slow queries can genuinely
 exhaust it, which is one of the failure scenarios Incident must detect.
+
+Payments are idempotent per order_id (unique in the table): repeating a request
+returns the existing payment instead of charging twice, and voiding an order
+leaves a "voided" row so a slow, late-arriving charge for it can't succeed.
 """
 
 import os
 from contextlib import asynccontextmanager
 
 import psycopg
+from fastapi import Response
 from psycopg_pool import ConnectionPool, PoolTimeout
 from pydantic import BaseModel, Field
 
@@ -36,6 +41,9 @@ async def lifespan(app):
                    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
                )"""
         )
+        conn.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS payments_order_id_key ON payments (order_id)"
+        )
     yield
     pool.close()
 
@@ -44,8 +52,25 @@ app = create_app("payment", lifespan=lifespan)
 
 
 class PaymentIn(BaseModel):
-    order_id: str
+    order_id: str = Field(min_length=1, max_length=64)
     amount: float = Field(gt=0)
+
+
+class VoidIn(BaseModel):
+    order_id: str = Field(min_length=1, max_length=64)
+
+
+COLUMNS = "id, order_id, amount, status, created_at"
+
+
+def _payment(row) -> dict:
+    return {
+        "payment_id": row[0],
+        "order_id": row[1],
+        "amount": float(row[2]),
+        "status": row[3],
+        "created_at": row[4].isoformat(),
+    }
 
 
 def _db_error(exc: Exception) -> ServiceError:
@@ -65,23 +90,46 @@ def health():
 
 
 @app.post("/payments", status_code=201)
-def create_payment(body: PaymentIn):
+def create_payment(body: PaymentIn, response: Response):
+    """Charge an order. 201 for a new payment, 200 if this order was already charged."""
     try:
         with pool.connection() as conn:
             row = conn.execute(
                 "INSERT INTO payments (order_id, amount, status) VALUES (%s, %s, 'captured') "
-                "RETURNING id, created_at",
+                f"ON CONFLICT (order_id) DO NOTHING RETURNING {COLUMNS}",
                 (body.order_id, body.amount),
+            ).fetchone()
+            if row is None:  # already exists: this is a retry (or the order was voided)
+                row = conn.execute(
+                    f"SELECT {COLUMNS} FROM payments WHERE order_id = %s", (body.order_id,)
+                ).fetchone()
+                response.status_code = 200
+    except (PoolTimeout, psycopg.Error) as exc:
+        raise _db_error(exc) from exc
+    payment = _payment(row)
+    if payment["status"] == "voided":
+        raise ServiceError(409, "PaymentVoided", f"order {body.order_id} was cancelled")
+    if payment["amount"] != round(body.amount, 2):
+        raise ServiceError(
+            409, "IdempotencyConflict", f"order {body.order_id} was charged a different amount"
+        )
+    return payment
+
+
+@app.post("/payments/void")
+def void_payment(body: VoidIn):
+    """Cancel an order's payment. Safe to retry, and safe to call before the charge lands."""
+    try:
+        with pool.connection() as conn:
+            row = conn.execute(
+                "INSERT INTO payments (order_id, amount, status) VALUES (%s, 0, 'voided') "
+                "ON CONFLICT (order_id) DO UPDATE SET status = 'voided' "
+                f"RETURNING {COLUMNS}",
+                (body.order_id,),
             ).fetchone()
     except (PoolTimeout, psycopg.Error) as exc:
         raise _db_error(exc) from exc
-    return {
-        "payment_id": row[0],
-        "order_id": body.order_id,
-        "amount": body.amount,
-        "status": "captured",
-        "created_at": row[1].isoformat(),
-    }
+    return _payment(row)
 
 
 @app.get("/payments/{payment_id}")
@@ -89,17 +137,10 @@ def get_payment(payment_id: int):
     try:
         with pool.connection() as conn:
             row = conn.execute(
-                "SELECT id, order_id, amount, status, created_at FROM payments WHERE id = %s",
-                (payment_id,),
+                f"SELECT {COLUMNS} FROM payments WHERE id = %s", (payment_id,)
             ).fetchone()
     except (PoolTimeout, psycopg.Error) as exc:
         raise _db_error(exc) from exc
     if row is None:
         raise ServiceError(404, "PaymentNotFound", f"no payment {payment_id}")
-    return {
-        "payment_id": row[0],
-        "order_id": row[1],
-        "amount": float(row[2]),
-        "status": row[3],
-        "created_at": row[4].isoformat(),
-    }
+    return _payment(row)

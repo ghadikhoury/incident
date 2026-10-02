@@ -65,7 +65,14 @@ Every request is logged as one JSON line (`service`, `trace_id`, `endpoint`, `st
 ```bash
 python -m venv .venv && .venv/Scripts/activate   # Windows; use .venv/bin/activate on Mac/Linux
 pip install -r requirements-dev.txt
-ruff check . && ruff format --check . && pytest
+ruff check . && ruff format --check . && pytest   # unit tests
+pytest integration                                # against a running `docker compose up` stack
 ```
+
+### Order consistency
+
+If payment fails, the order service compensates in the background: it voids the payment and releases the reserved stock, retrying with backoff for about a minute. Both calls are idempotent on `order_id`:
+- Payment has a unique `order_id`. A repeated charge returns the existing payment instead of charging twice. A void leaves a `voided` row, so a slow charge that lands afterwards is rejected (`409 PaymentVoided`).
+- Inventory tracks reservations per `order_id`, so a retried reserve or release has no extra effect.
 
 Full build plan: [docs/PLAN.md](docs/PLAN.md)

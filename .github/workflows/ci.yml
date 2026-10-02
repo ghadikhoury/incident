@@ -23,17 +23,19 @@ jobs:
         run: pytest
 
   compose-smoke:
-    # Boots the whole simulated system and places one real order through it.
+    # Boots the whole system and runs the integration tests against it.
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - name: Start services
         run: docker compose up -d --build --wait
-      - name: Place an order through the gateway
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Integration tests against the running stack
         run: |
-          curl -fsS -X POST localhost:8090/orders \
-            -H 'content-type: application/json' \
-            -d '{"item_id":"sku-1","quantity":2}'
+          pip install pytest==9.1.1 httpx==0.28.1
+          pytest integration -v
       - name: Show logs on failure
         if: failure()
         run: docker compose logs
