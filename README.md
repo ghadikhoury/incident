@@ -41,4 +41,31 @@ Requirements: Python 3.12, Node 20+, Docker Desktop, AWS CLI v2.
 cp .env.example .env   # then fill in values
 ```
 
+### Run the simulated system
+
+```bash
+docker compose up -d --build --wait     # start everything, wait until healthy
+curl -X POST localhost:8090/orders -H 'content-type: application/json' \
+     -d '{"item_id":"sku-1","quantity":2}'
+docker compose logs -f order payment    # watch the JSON logs
+docker compose down                     # stop (add -v to also wipe the database)
+```
+
+| Service | Local port | Depends on |
+|---|---|---|
+| gateway | 8090 | order |
+| order | 8091 | inventory, payment |
+| payment | 8092 | postgres |
+| inventory | 8093 | none |
+
+Every request is logged as one JSON line (`service`, `trace_id`, `endpoint`, `status_code`, `latency_ms`, `error_type`, ...). Send an `x-trace-id` header (or let the gateway generate one) to follow a request across services.
+
+### Tests
+
+```bash
+python -m venv .venv && .venv/Scripts/activate   # Windows; use .venv/bin/activate on Mac/Linux
+pip install -r requirements-dev.txt
+ruff check . && ruff format --check . && pytest
+```
+
 Full build plan: [docs/PLAN.md](docs/PLAN.md)

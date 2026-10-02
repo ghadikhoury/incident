@@ -16,9 +16,27 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - run: pip install ruff pytest
+      - run: pip install -r requirements-dev.txt
       - name: Lint
-        run: ruff check .
+        run: ruff check . && ruff format --check .
       - name: Test
-        # Exit code 5 means "no tests collected", which is fine until code exists.
-        run: pytest || [ $? -eq 5 ]
+        run: pytest
+
+  compose-smoke:
+    # Boots the whole simulated system and places one real order through it.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Start services
+        run: docker compose up -d --build --wait
+      - name: Place an order through the gateway
+        run: |
+          curl -fsS -X POST localhost:8090/orders \
+            -H 'content-type: application/json' \
+            -d '{"item_id":"sku-1","quantity":2}'
+      - name: Show logs on failure
+        if: failure()
+        run: docker compose logs
+      - name: Stop services
+        if: always()
+        run: docker compose down -v
