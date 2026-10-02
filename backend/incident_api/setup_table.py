@@ -102,22 +102,22 @@ def _backfill_active_incidents(client, table_name: str) -> int:
             **({"ExclusiveStartKey": start_key} if start_key else {}),
         )
         for item in page["Items"]:
-            if item.get("status", {}).get("S") not in {"OPEN", "ACKNOWLEDGED"}:
+            if item.get("status", {}).get("S") == "RESOLVED":
                 continue
             try:
                 client.update_item(
                     TableName=table_name,
                     Key={"pk": item["pk"], "sk": item["sk"]},
                     UpdateExpression="SET active_pk = :active",
+                    # Active means "not resolved", exactly as in store.update().
                     ConditionExpression=(
                         "attribute_exists(pk) AND attribute_not_exists(active_pk) "
-                        "AND #status IN (:open, :acknowledged)"
+                        "AND #status <> :resolved"
                     ),
                     ExpressionAttributeNames={"#status": "status"},
                     ExpressionAttributeValues={
                         ":active": {"S": "ACTIVE"},
-                        ":open": {"S": "OPEN"},
-                        ":acknowledged": {"S": "ACKNOWLEDGED"},
+                        ":resolved": {"S": "RESOLVED"},
                     },
                 )
                 count += 1
