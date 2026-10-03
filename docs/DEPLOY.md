@@ -36,13 +36,23 @@ IAM role:       scoped table, queue, evidence, log, metric and Bedrock access (d
 
 ### CDK deployment on a fresh account/region
 
-The CDK stack uses the same fixed resource names as the original CLI demo.
-CloudFormation cannot create a second `incident-store`, evidence bucket, alarm
-set, or Lambda alongside those resources. **Do not run `cdk deploy` in the
-current us-east-2 account until the existing data has been exported and the
-migration is approved.** `cdk synth` and the CI template tests are safe and do
-not change AWS resources. The table, evidence bucket, log groups, and queues
-have `Retain` removal policies to prevent accidental incident-history loss.
+The default CDK stack uses the same fixed resource names as the original CLI
+demo. CloudFormation cannot create a second `incident-store`, evidence bucket,
+alarm set, or Lambda alongside those resources. **Do not deploy the default
+stack in the current us-east-2 account until the existing data has been
+exported and the migration is approved.** `cdk synth` and the CI template
+tests are safe and do not change AWS resources. The default stack's table,
+evidence bucket, log groups, and queues have `Retain` removal policies to
+prevent accidental incident-history loss.
+
+An isolated verification stack can coexist with the CLI demo. Pass
+`-c stage=verify -c branch=step-10-final` (or a different Git branch containing
+the stage support) to every CDK command. It names its own table, bucket,
+queues, logs, alarms, Lambda, roles, VPC, and EC2 instance; it also uses a
+separate metric namespace. It does not retain its data resources on deletion.
+Only destroy a stage after checking the account and exact stack name. The
+evidence bucket must be emptied before `cdk destroy` if a scenario wrote
+evidence. Its data is disposable; the original demo data is unaffected.
 
 For an empty account/region, using the `incident` AWS profile and an existing
 EC2 key pair, from the repository root:

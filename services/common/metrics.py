@@ -5,9 +5,10 @@ named fields into CloudWatch metrics. No separate metrics pipeline or API calls 
 https://docs.aws.amazon.com/AmazonCloudWatch/latest/monitoring/CloudWatch_Embedded_Metric_Format_Specification.html
 """
 
+import os
 import time
 
-NAMESPACE = "Incident"
+NAMESPACE = os.getenv("INCIDENT_METRIC_NAMESPACE", "Incident")
 
 
 def request_metrics(service: str, latency_ms: float, status_code: int, timestamp_ms: int) -> dict:

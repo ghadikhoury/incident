@@ -107,3 +107,32 @@ def test_alarm_semantics_and_failure_routes():
             "Targets": [Match.object_like({"DeadLetterConfig": Match.any_value()})],
         },
     )
+
+
+def test_disposable_stage_is_isolated_from_live_names():
+    asset = Path(__file__).resolve().parents[1] / ".build" / "incident-processor.zip"
+    app = cdk.App()
+    stage = IncidentStack(
+        app,
+        "TestVerify",
+        asset=asset,
+        ssh_cidr="203.0.113.7/32",
+        key_name="test-key",
+        stage="verify",
+        branch="step-10-final",
+    )
+    resources = Template.from_stack(stage).to_json()["Resources"]
+    by_type = {}
+    for item in resources.values():
+        by_type.setdefault(item["Type"], []).append(item)
+    assert by_type["AWS::DynamoDB::Table"][0]["Properties"]["TableName"] == "incident-verify-store"
+    assert by_type["AWS::DynamoDB::Table"][0].get("DeletionPolicy", "Delete") == "Delete"
+    assert by_type["AWS::SQS::Queue"][0].get("DeletionPolicy", "Delete") == "Delete"
+    assert (
+        by_type["AWS::Lambda::Function"][0]["Properties"]["FunctionName"]
+        == "incident-verify-processor"
+    )
+    assert by_type["AWS::EC2::Instance"][0]["Properties"]["UserData"]
+    names = {item["Properties"]["AlarmName"] for item in by_type["AWS::CloudWatch::Alarm"]}
+    assert "incident-verify-payment-latency" in names
+    assert not any(name.startswith("incident-payment-") for name in names)

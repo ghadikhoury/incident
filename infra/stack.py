@@ -28,9 +28,15 @@ class IncidentStack(Stack):
         asset: Path,
         ssh_cidr: str,
         key_name: str,
+        stage: str = "",
+        branch: str = "main",
         **kwargs,
     ) -> None:
         super().__init__(scope, construct_id, **kwargs)
+        self.stage = stage
+        self.prefix = "incident" + ("-" + stage if stage else "")
+        self.log_prefix = "/incident" + ("/" + stage if stage else "")
+        self.metric_namespace = "Incident" + ("-" + stage if stage else "")
         try:
             ssh_network = ipaddress.ip_network(ssh_cidr, strict=True)
         except ValueError as exc:
@@ -42,7 +48,7 @@ class IncidentStack(Stack):
             "Incidents",
             "AWS::DynamoDB::Table",
             {
-                "TableName": "incident-store",
+                "TableName": f"{self.prefix}-store",
                 "BillingMode": "PAY_PER_REQUEST",
                 "AttributeDefinitions": [
                     {"AttributeName": name, "AttributeType": "S"}
@@ -68,10 +74,10 @@ class IncidentStack(Stack):
                 ],
                 "PointInTimeRecoverySpecification": {"PointInTimeRecoveryEnabled": True},
             },
-            retain=True,
+            retain=not stage,
         )
 
-        bucket_name = Fn.sub("incident-evidence-${AWS::AccountId}")
+        bucket_name = Fn.sub(f"{self.prefix}-evidence-${{AWS::AccountId}}")
         bucket = self._resource(
             "Evidence",
             "AWS::S3::Bucket",
@@ -99,7 +105,7 @@ class IncidentStack(Stack):
                     ]
                 },
             },
-            retain=True,
+            retain=not stage,
         )
         self._resource(
             "EvidenceHttpsOnly",
@@ -125,11 +131,11 @@ class IncidentStack(Stack):
             },
         )
 
-        updates = self._queue("Updates", "incident-updates", 4, 90, wait=10)
-        failures = self._queue("Failures", "incident-pipeline-failures", 14, 30)
+        updates = self._queue("Updates", f"{self.prefix}-updates", 4, 90, wait=10)
+        failures = self._queue("Failures", f"{self.prefix}-pipeline-failures", 14, 30)
         backfill = self._queue(
             "Backfill",
-            "incident-evidence-backfill",
+            f"{self.prefix}-evidence-backfill",
             4,
             270,
             redrive={
@@ -144,19 +150,19 @@ class IncidentStack(Stack):
                 f"Log{service.title()}",
                 "AWS::Logs::LogGroup",
                 {
-                    "LogGroupName": f"/incident/{service}",
+                    "LogGroupName": f"{self.log_prefix}/{service}",
                     "RetentionInDays": 14,
                 },
-                retain=True,
+                retain=not stage,
             )
         lambda_log = self._resource(
             "ProcessorLog",
             "AWS::Logs::LogGroup",
             {
-                "LogGroupName": "/aws/lambda/incident-processor",
+                "LogGroupName": f"/aws/lambda/{self.prefix}-processor",
                 "RetentionInDays": 14,
             },
-            retain=True,
+            retain=not stage,
         )
 
         vpc = self._resource(
@@ -220,7 +226,7 @@ class IncidentStack(Stack):
 
         role = self._role(
             "InstanceRole",
-            "incident-cdk-ec2",
+            f"{self.prefix}-cdk-ec2",
             "ec2.amazonaws.com",
             [
                 self._allow(
@@ -245,7 +251,7 @@ class IncidentStack(Stack):
                     Fn.get_att(bucket.logical_id, "Arn").to_string() + "/incidents/*",
                 ),
                 self._allow("cloudwatch:GetMetricData", "*"),
-                self._allow("logs:StartQuery", arn("logs", "log-group:/incident/*")),
+                self._allow("logs:StartQuery", arn("logs", f"log-group:{self.log_prefix}/*")),
                 self._allow("logs:GetQueryResults", "*"),
                 self._allow(
                     "bedrock:InvokeModel",
@@ -256,8 +262,8 @@ class IncidentStack(Stack):
                 self._allow(
                     ["logs:CreateLogStream", "logs:PutLogEvents"],
                     [
-                        arn("logs", "log-group:/incident/*"),
-                        arn("logs", "log-group:/incident/*:log-stream:*"),
+                        arn("logs", f"log-group:{self.log_prefix}/*"),
+                        arn("logs", f"log-group:{self.log_prefix}/*:log-stream:*"),
                     ],
                 ),
             ],
@@ -282,9 +288,26 @@ class IncidentStack(Stack):
             "INCIDENT_EVIDENCE_BUCKET=\n",
             "INCIDENT_EVIDENCE_BUCKET=${IncidentEvidenceBucket}\n",
         )
+        user_data = user_data.replace('BRANCH="main"', 'BRANCH="${IncidentBranch}"')
+        user_data = user_data.replace(
+            "INCIDENT_QUEUE_URL=${IncidentQueueUrl}\n",
+            "INCIDENT_QUEUE_URL=${IncidentQueueUrl}\n"
+            "INCIDENT_TABLE=${IncidentTable}\n"
+            "INCIDENT_LOG_PREFIX=${IncidentLogPrefix}\n"
+            "INCIDENT_METRIC_NAMESPACE=${IncidentMetricNamespace}\n"
+            "INCIDENT_ALARM_PREFIX=${IncidentAlarmPrefix}\n",
+        )
         user_data = Fn.sub(
             user_data,
-            {"IncidentQueueUrl": updates.ref, "IncidentEvidenceBucket": bucket.ref},
+            {
+                "IncidentQueueUrl": updates.ref,
+                "IncidentEvidenceBucket": bucket.ref,
+                "IncidentTable": table.ref,
+                "IncidentLogPrefix": self.log_prefix,
+                "IncidentMetricNamespace": self.metric_namespace,
+                "IncidentAlarmPrefix": self.prefix,
+                "IncidentBranch": branch,
+            },
         )
         instance = self._resource(
             "DemoInstance",
@@ -314,7 +337,7 @@ class IncidentStack(Stack):
                 ],
                 "UserData": Fn.base64(user_data),
                 "Tags": [
-                    {"Key": "Name", "Value": "incident"},
+                    {"Key": "Name", "Value": self.prefix},
                     {"Key": "Project", "Value": "incident"},
                 ],
             },
@@ -325,7 +348,7 @@ class IncidentStack(Stack):
 
         processor_role = self._role(
             "ProcessorRole",
-            "incident-cdk-processor",
+            f"{self.prefix}-cdk-processor",
             "lambda.amazonaws.com",
             [
                 self._allow(
@@ -352,7 +375,7 @@ class IncidentStack(Stack):
                 self._allow(
                     ["logs:StartQuery", "logs:GetQueryResults"],
                     [
-                        arn("logs", f"log-group:/incident/{service}:*")
+                        arn("logs", f"log-group:{self.log_prefix}/{service}:*")
                         for service in (*SERVICES, "backend")
                     ],
                 ),
@@ -366,7 +389,7 @@ class IncidentStack(Stack):
                 ),
                 self._allow(
                     ["logs:CreateLogStream", "logs:PutLogEvents"],
-                    arn("logs", "log-group:/aws/lambda/incident-processor:*"),
+                    arn("logs", f"log-group:/aws/lambda/{self.prefix}-processor:*"),
                 ),
             ],
         )
@@ -375,7 +398,7 @@ class IncidentStack(Stack):
             "Processor",
             "AWS::Lambda::Function",
             {
-                "FunctionName": "incident-processor",
+                "FunctionName": f"{self.prefix}-processor",
                 "Runtime": "python3.12",
                 "Handler": "incident_api.pipeline.lambda_handler",
                 "Role": Fn.get_att(processor_role.logical_id, "Arn"),
@@ -388,6 +411,10 @@ class IncidentStack(Stack):
                         "INCIDENT_QUEUE_URL": updates.ref,
                         "INCIDENT_BACKFILL_QUEUE_URL": backfill.ref,
                         "INCIDENT_INSTANCE_ID": instance.ref,
+                        "INCIDENT_TABLE": table.ref,
+                        "INCIDENT_LOG_PREFIX": self.log_prefix,
+                        "INCIDENT_METRIC_NAMESPACE": self.metric_namespace,
+                        "INCIDENT_ALARM_PREFIX": self.prefix,
                     }
                 },
             },
@@ -419,14 +446,14 @@ class IncidentStack(Stack):
         alarm_names = []
         for service in SERVICES:
             for signal in SIGNALS:
-                name = f"incident-{service}-{signal}"
+                name = f"{self.prefix}-{service}-{signal}"
                 alarm_names.append(name)
                 self._alarm(service, signal, name)
         rule = self._resource(
             "AlarmTransitions",
             "AWS::Events::Rule",
             {
-                "Name": "incident-alarm-transitions",
+                "Name": f"{self.prefix}-alarm-transitions",
                 "State": "ENABLED",
                 "EventPattern": {
                     "source": ["aws.cloudwatch"],
@@ -438,7 +465,7 @@ class IncidentStack(Stack):
                 },
                 "Targets": [
                     {
-                        "Id": "incident-processor",
+                        "Id": f"{self.prefix}-processor",
                         "Arn": Fn.get_att(processor.logical_id, "Arn"),
                         "DeadLetterConfig": {"Arn": Fn.get_att(failures.logical_id, "Arn")},
                     }
@@ -510,7 +537,7 @@ class IncidentStack(Stack):
             props["ReceiveMessageWaitTimeSeconds"] = wait
         if redrive:
             props["RedrivePolicy"] = redrive
-        return self._resource(ident, "AWS::SQS::Queue", props, retain=True)
+        return self._resource(ident, "AWS::SQS::Queue", props, retain=not self.stage)
 
     def _role(self, ident: str, name: str, principal: str, statements: list[dict]) -> CfnResource:
         return self._resource(
@@ -563,7 +590,7 @@ class IncidentStack(Stack):
                             "ReturnData": False,
                             "MetricStat": {
                                 "Metric": {
-                                    "Namespace": "Incident",
+                                    "Namespace": self.metric_namespace,
                                     "MetricName": metric,
                                     "Dimensions": dimension,
                                 },
@@ -586,7 +613,7 @@ class IncidentStack(Stack):
         else:
             props.update(
                 {
-                    "Namespace": "Incident",
+                    "Namespace": self.metric_namespace,
                     "MetricName": "Latency" if signal == "latency" else "HealthCheckFailed",
                     "Dimensions": dimension,
                     "Period": 60,

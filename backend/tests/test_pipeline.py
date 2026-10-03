@@ -7,7 +7,13 @@ from datetime import UTC, datetime
 import pytest
 
 from incident_api.models import IncidentCreate, Status
-from incident_api.pipeline import SAMPLES_QUERY, SUMMARY_QUERY, AlarmPipeline
+from incident_api.pipeline import (
+    SAMPLES_QUERY,
+    SUMMARY_QUERY,
+    AlarmPipeline,
+    IgnoredAlarm,
+    _transition,
+)
 
 
 class Logs:
@@ -103,6 +109,15 @@ def pipeline(store):
         backfill_queue_url="backfill",
         instance_id="instance",
     )
+
+
+def test_isolated_stage_rejects_live_alarms(monkeypatch):
+    monkeypatch.setattr("incident_api.config.ALARM_PREFIX", "incident-verify")
+    staged = event("staged")
+    staged["detail"]["alarmName"] = "incident-verify-payment-latency"
+    assert _transition(staged)[1] == "payment"
+    with pytest.raises(IgnoredAlarm, match="unmanaged alarm"):
+        _transition(event("live"))
 
 
 def test_alarm_creates_evidence_timeline_and_notification(store):

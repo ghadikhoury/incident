@@ -5,10 +5,11 @@ service's own request metrics can't: a crashed or hung service emits nothing at 
 """
 
 import json
+import os
 import sys
 import time
 
-NAMESPACE = "Incident"
+NAMESPACE = os.getenv("INCIDENT_METRIC_NAMESPACE", "Incident")
 
 
 def health_check_line(

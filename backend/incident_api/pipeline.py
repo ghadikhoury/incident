@@ -52,13 +52,9 @@ def _transition(event: dict) -> tuple[str, str, str, datetime]:
         raise IgnoredAlarm("not a CloudWatch alarm state change")
     detail = event["detail"]
     name = detail["alarmName"]
-    parts = name.split("-")
-    if (
-        len(parts) != 3
-        or parts[0] != "incident"
-        or parts[1] not in SERVICES
-        or parts[2] not in SIGNALS
-    ):
+    prefix = config.ALARM_PREFIX + "-"
+    parts = name[len(prefix):].split("-") if name.startswith(prefix) else []
+    if len(parts) != 2 or parts[0] not in SERVICES or parts[1] not in SIGNALS:
         raise IgnoredAlarm(f"unmanaged alarm: {name}")
     state = detail["state"]["value"]
     if state not in {"ALARM", "OK", "INSUFFICIENT_DATA"}:
@@ -68,7 +64,7 @@ def _transition(event: dict) -> tuple[str, str, str, datetime]:
         raise ValueError("alarm timestamp must have a timezone")
     if not event.get("id"):
         raise ValueError("event id is required")
-    return name, parts[1], state, when.astimezone(UTC)
+    return name, parts[0], state, when.astimezone(UTC)
 
 
 class AlarmPipeline:
@@ -373,7 +369,7 @@ class AlarmPipeline:
         prefix = f"incidents/{incident_id}/events/{event_id}"
         start, requested_end = when - timedelta(minutes=5), when + timedelta(minutes=5)
         end = requested_end if complete else min(requested_end, datetime.now(UTC))
-        groups = [f"/incident/{service}", "/incident/backend"]
+        groups = [f"{config.LOG_PREFIX}/{service}", f"{config.LOG_PREFIX}/backend"]
         summary = self._query_logs(groups, start, end, SUMMARY_QUERY)
         samples = self._query_logs(groups, start, end, SAMPLES_QUERY)
         window = {
@@ -388,7 +384,7 @@ class AlarmPipeline:
                 "Id": metric.lower(),
                 "MetricStat": {
                     "Metric": {
-                        "Namespace": "Incident",
+                        "Namespace": config.METRIC_NAMESPACE,
                         "MetricName": metric,
                         "Dimensions": [{"Name": "Service", "Value": service}],
                     },

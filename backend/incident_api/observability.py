@@ -71,7 +71,7 @@ class IncidentTelemetry:
                         "Id": query_id,
                         "MetricStat": {
                             "Metric": {
-                                "Namespace": "Incident",
+                                "Namespace": config.METRIC_NAMESPACE,
                                 "MetricName": metric,
                                 "Dimensions": [{"Name": "Service", "Value": service}],
                             },
@@ -149,8 +149,8 @@ class IncidentTelemetry:
         if self.cloudwatch_logs is None:
             raise RuntimeError("CloudWatch Logs search is not configured")
         start, end = self.window(incident)
-        groups = [f"/incident/{name}" for name in self.services(incident)]
-        groups.append("/incident/backend")
+        groups = [f"{config.LOG_PREFIX}/{name}" for name in self.services(incident)]
+        groups.append(f"{config.LOG_PREFIX}/backend")
         query = (
             "fields @timestamp, service, level, endpoint, status_code, error_type, "
             "error_message, message, trace_id | "

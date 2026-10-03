@@ -6,6 +6,9 @@ from dataclasses import dataclass
 from incident_api.dependency import GRAPH
 
 TABLE_NAME = os.getenv("INCIDENT_TABLE", "incident-store")
+LOG_PREFIX = os.getenv("INCIDENT_LOG_PREFIX", "/incident")
+METRIC_NAMESPACE = os.getenv("INCIDENT_METRIC_NAMESPACE", "Incident")
+ALARM_PREFIX = os.getenv("INCIDENT_ALARM_PREFIX", "incident")
 AWS_REGION = os.getenv("AWS_REGION", "us-east-2")
 # Named AWS profile for local development (e.g. "incident" from `aws login`). When unset,
 # boto3 uses its default credential chain, e.g. the EC2 instance role in production.
