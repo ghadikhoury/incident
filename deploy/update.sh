@@ -14,3 +14,4 @@ echo "deploying $(git log -1 --format='%h %s')"
 docker compose up -d --build --wait --remove-orphans
 docker image prune -f >/dev/null  # old images would slowly fill the 20 GB disk
 docker compose ps
+./deploy/verify.sh

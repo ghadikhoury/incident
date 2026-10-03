@@ -36,8 +36,6 @@ cat > "$APP_DIR/.env" <<'EOF'
 AWS_REGION=us-east-2
 # No named profile on EC2: the backend gets credentials from the instance's IAM role.
 AWS_PROFILE=
-# Listen on all interfaces; the security group limits who can actually connect.
-DASHBOARD_BIND=0.0.0.0
 EOF
 
 # Start the stack on every boot (e.g. after stopping the instance to save credits).
@@ -47,3 +45,4 @@ systemctl enable incident.service
 
 cd "$APP_DIR"
 docker compose up -d --build --wait
+"$APP_DIR/deploy/verify.sh"
