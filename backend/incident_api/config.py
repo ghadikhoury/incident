@@ -8,6 +8,7 @@ AWS_REGION = os.getenv("AWS_REGION", "us-east-2")
 # Named AWS profile for local development (e.g. "incident" from `aws login`). When unset,
 # boto3 uses its default credential chain, e.g. the EC2 instance role in production.
 AWS_PROFILE = os.getenv("INCIDENT_AWS_PROFILE") or None
+QUEUE_URL = os.getenv("INCIDENT_QUEUE_URL") or None
 HEALTH_INTERVAL_S = float(os.getenv("HEALTH_INTERVAL_S", "3"))
 HEALTH_TIMEOUT_S = float(os.getenv("HEALTH_TIMEOUT_S", "2"))
 

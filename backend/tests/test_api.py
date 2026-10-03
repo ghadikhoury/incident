@@ -1,8 +1,13 @@
+import json
+from queue import Empty, Queue
+from threading import Event
+
 import pytest
 from fastapi.testclient import TestClient
 
 from incident_api.config import MonitoredService
 from incident_api.main import create_app
+from incident_api.models import IncidentCreate
 
 FAILURE_URL = "/api/simulation/failure"
 SERVICES = (
@@ -108,6 +113,46 @@ def test_websocket_receives_services_then_incident_updates(client):
         assert next_incident_message(ws) == {"type": "incident", "data": incident}
         client.post(f"/api/incidents/{incident['incident_id']}/acknowledge", json={})
         assert next_incident_message(ws)["data"]["status"] == "ACKNOWLEDGED"
+
+
+def test_sqs_update_reaches_websocket(store, fake):
+    class QueueClient:
+        def __init__(self):
+            self.pending = Queue()
+            self.deleted = []
+            self.delete_called = Event()
+
+        def receive_message(self, **kwargs):
+            try:
+                return {"Messages": [self.pending.get(timeout=0.2)]}
+            except Empty:
+                return {}
+
+        def delete_message(self, **kwargs):
+            self.deleted.append(kwargs["ReceiptHandle"])
+            self.delete_called.set()
+
+    sqs = QueueClient()
+    app = create_app(
+        store=store,
+        http_client=fake.client(),
+        services=SERVICES,
+        health_interval_s=3600,
+        queue_url="test-queue",
+        sqs_client=sqs,
+    )
+    with TestClient(app) as test_client, test_client.websocket_connect("/api/ws") as ws:
+        assert ws.receive_json()["type"] == "services"
+        incident = store.create(IncidentCreate(title="CloudWatch alarm", service="payment"))
+        sqs.pending.put(
+            {
+                "Body": json.dumps({"incident_id": incident.incident_id}),
+                "ReceiptHandle": "receipt-1",
+            }
+        )
+        assert next_incident_message(ws)["data"]["incident_id"] == incident.incident_id
+        assert sqs.delete_called.wait(1)
+        assert sqs.deleted == ["receipt-1"]
 
 
 def test_inject_and_recover_failure(client, fake):

@@ -70,9 +70,57 @@ class IncidentStore:
         return cls(session.resource("dynamodb").Table(config.TABLE_NAME))
 
     def create(self, data: IncidentCreate) -> Incident:
+        created = ("created", f"Incident created: {data.title}")
+        for attempt in range(8):
+            incident, actions = self.automatic_incident_actions(data)
+            try:
+                self._transact(
+                    [*actions, *self._event_puts(incident.incident_id, [created], data.actor)]
+                )
+                return incident
+            except ClientError as exc:
+                reasons = [r.get("Code") for r in exc.response.get("CancellationReasons", [])]
+                if (
+                    exc.response["Error"]["Code"] != "TransactionCanceledException"
+                    or reasons[:1] != ["ConditionalCheckFailed"]
+                    or attempt == 7
+                ):
+                    raise
+                time.sleep(0.025 * (attempt + 1))
+        raise RuntimeError("unreachable incident creation retry state")
+
+    def automatic_incident_actions(self, data: IncidentCreate) -> tuple[Incident, list[dict]]:
+        """Prepare a new incident and counter increment for one atomic transaction.
+
+        A competing writer invalidates the counter condition; callers retry with a fresh
+        candidate. Failed races therefore leave no visible gaps in incident numbers.
+        """
+        current = self.table.get_item(
+            Key={"pk": "COUNTER", "sk": "INCIDENT"}, ConsistentRead=True
+        ).get("Item")
+        value = int(current["value"]) if current else 0
+        incident, put = self._new_incident(data, f"INC-{1001 + value}")
+        counter = {
+            "Update": {
+                "TableName": self.table.name,
+                "Key": {"pk": "COUNTER", "sk": "INCIDENT"},
+                "UpdateExpression": "SET #value = :next",
+                "ConditionExpression": "#value = :previous"
+                if current
+                else "attribute_not_exists(pk)",
+                "ExpressionAttributeNames": {"#value": "value"},
+                "ExpressionAttributeValues": {
+                    ":next": value + 1,
+                    **({":previous": value} if current else {}),
+                },
+            }
+        }
+        return incident, [counter, put]
+
+    def _new_incident(self, data: IncidentCreate, incident_id: str) -> tuple[Incident, dict]:
         now = now_iso()
         incident = Incident(
-            incident_id=self._next_id(),
+            incident_id=incident_id,
             title=data.title,
             service=data.service,
             severity=data.severity,
@@ -84,17 +132,67 @@ class IncidentStore:
         )
         item = {k: v for k, v in incident.model_dump(mode="json").items() if v is not None}
         item |= {
-            "pk": _pk(incident.incident_id),
+            "pk": _pk(incident_id),
             "sk": "META",
             "gsi1pk": "INCIDENT",
-            "gsi1sk": f"{now}#{incident.incident_id}",  # unique even if created_at ties
+            "gsi1sk": f"{now}#{incident_id}",
             "active_pk": ACTIVE,
         }
-        put = {"Put": {"TableName": self.table.name, "Item": item}}
-        put["Put"]["ConditionExpression"] = "attribute_not_exists(pk)"
-        created = ("created", f"Incident created: {data.title}")
-        self._transact([put, *self._event_puts(incident.incident_id, [created], data.actor)])
-        return incident
+        return incident, {
+            "Put": {
+                "TableName": self.table.name,
+                "Item": item,
+                "ConditionExpression": "attribute_not_exists(pk)",
+            }
+        }
+
+    @staticmethod
+    def incident_key(incident_id: str) -> dict:
+        return {"pk": _pk(incident_id), "sk": "META"}
+
+    @staticmethod
+    def event_time() -> str:
+        return _unique_now().isoformat(timespec="microseconds")
+
+    @staticmethod
+    def alarm_marker_key(event_id: str) -> dict:
+        return {"pk": f"ALARM_EVENT#{event_id}", "sk": "EVENT_MARKER"}
+
+    def alarm_marker(self, event_id: str) -> dict | None:
+        marker = self.table.get_item(Key=self.alarm_marker_key(event_id), ConsistentRead=True).get(
+            "Item"
+        )
+        if marker:
+            return marker
+        # Read markers written by the first Step 6 deployment during in-flight retries.
+        return self.table.get_item(
+            Key={"pk": f"ALARM_EVENT#{event_id}", "sk": "META"}, ConsistentRead=True
+        ).get("Item")
+
+    def event_puts(self, incident_id: str, events: list[Event], actor: str | None) -> list:
+        return self._event_puts(incident_id, events, actor)
+
+    def transact(self, items: list[dict]) -> None:
+        self._transact(items)
+
+    def record_evidence(
+        self, incident_id: str, event_id: str, at: str, bucket: str, prefix: str
+    ) -> None:
+        message = f"Evidence: s3://{bucket}/{prefix}/"
+        try:
+            self.table.put_item(
+                Item={
+                    "pk": _pk(incident_id),
+                    "sk": f"EVENT#{at}#EVIDENCE#{event_id}",
+                    "at": at,
+                    "kind": "evidence",
+                    "message": message,
+                },
+                ConditionExpression="attribute_not_exists(pk)",
+            )
+        except ClientError as exc:
+            if exc.response["Error"]["Code"] != "ConditionalCheckFailedException":
+                raise
 
     def get(self, incident_id: str) -> Incident | None:
         item = self.table.get_item(
@@ -218,13 +316,3 @@ class IncidentStore:
             start_key = page.get("LastEvaluatedKey")
             if not start_key:
                 return items
-
-    def _next_id(self) -> str:
-        response = self.table.update_item(
-            Key={"pk": "COUNTER", "sk": "INCIDENT"},
-            UpdateExpression="ADD #value :one",
-            ExpressionAttributeNames={"#value": "value"},
-            ExpressionAttributeValues={":one": 1},
-            ReturnValues="UPDATED_NEW",
-        )
-        return f"INC-{1000 + int(response['Attributes']['value'])}"

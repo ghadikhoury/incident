@@ -168,8 +168,9 @@ missing data as OK. The backend emits health checks every 3 seconds while it is 
 health alarms instead show `INSUFFICIENT_DATA` when those samples stop arriving. That state
 means monitoring is unavailable, **not** that the service recovered. Check the EC2 instance
 state first: `stopped` is expected when you intentionally pause the demo; if it is `running`,
-check `incident.service`, the backend container, and CloudWatch log delivery. Step 6 must not
-interpret `INSUFFICIENT_DATA` as an `OK` recovery event.
+check `incident.service`, the backend container, and CloudWatch log delivery. The Step 6
+pipeline records a monitoring-degraded incident while EC2 is running and does not interpret
+`INSUFFICIENT_DATA` as an `OK` recovery event.
 
 Where to look: CloudWatch console, Logs → Log groups → `/incident/payment`, Metrics → All
 metrics → `Incident`, and Alarms. From the CLI:
@@ -183,6 +184,56 @@ aws logs tail /incident/payment --since 5m --follow
 Injecting `db_slow` on payment (dashboard → Simulation) flips payment's alarms to `ALARM`
 within about 2-3 minutes, followed by order's (the cascade). Recovering returns them to `OK`
 a few minutes later.
+
+## Step 6: automatic incident pipeline
+
+From the repository root, after the table, CloudWatch log groups and alarms exist:
+
+```bash
+AWS_PROFILE=incident python deploy/setup_pipeline.py --instance-id i-08d5fddbdc352cc57
+```
+
+The script packages Linux Lambda dependencies, creates the private evidence bucket
+`incident-evidence-<account>` (30-day evidence retention), SQS queue `incident-updates`,
+an evidence-backfill queue and a 14-day failure queue, Lambda role and function, and
+the EventBridge alarm-state rule. EventBridge delivery failures, exhausted Lambda
+asynchronous retries, and failed backfill messages go to the failure queue for inspection.
+It updates the EC2 role to receive queue messages. Rerunning it updates the Lambda code
+and configuration.
+Use the instance ID for the current demo instance if it changes.
+
+Set `INCIDENT_QUEUE_URL` to the printed SQS URL in the instance's `/opt/incident/.env`,
+then deploy the Step 6 branch with `sudo /opt/incident/deploy/update.sh <branch>` or
+`main` after merge. A local Compose deployment can set the same variable in its `.env`.
+The backend uses long polling and broadcasts each updated incident over `/api/ws`.
+The Lambda creates one incident for alarms processed within a sliding ten-minute window;
+Step 7 replaces that coarse grouping with dependency-aware correlation. EventBridge
+delivery can be repeated, so event IDs are stored in DynamoDB and retries reuse the
+same incident and evidence timeline entry. Resolving an incident lets the next alarm
+start a new incident. Returning to `OK` adds a timeline entry but leaves resolution to
+the engineer. A health alarm entering `INSUFFICIENT_DATA` while EC2 is running creates
+or updates a monitoring-degraded incident; while EC2 is stopped it is ignored.
+
+To verify, inject `db_slow` on the dashboard, wait for the payment CloudWatch alarm to
+enter `ALARM`, and check that a new incident appears without refreshing the page. Open
+its timeline via `/api/incidents/<id>` and find the evidence path. The bucket contains
+`event.json`, `logs.json`, and `metrics.json` under
+`incidents/<id>/events/<eventbridge-id>/`. The first snapshot is captured immediately
+and marked `complete: false` because the five minutes after the alarm have not yet
+elapsed. A delayed backfill replaces `logs.json` and `metrics.json` with the full
+five minutes before and after the alarm and marks them `complete: true`. The log
+evidence has per-minute counts across the full window and up to 200 early warning/error
+samples; it excludes the simulation control endpoint and injection messages so they
+do not reveal the diagnosis. The incident is broadcast as soon as its record exists,
+even if evidence capture later fails; evidence and backfill each trigger another update.
+
+The Lambda's log group is `/aws/lambda/incident-processor` (14-day retention). If an
+alarm transitions but no incident appears, inspect that group, the EventBridge target,
+and `incident-pipeline-failures`. The update queue retains messages for four days and
+redelivers when a backend broadcast fails; the initial incident API fetch covers updates
+missed while a browser was disconnected. Inspect the failure queue before replaying a
+failed alarm or backfill: alarm events are idempotent in DynamoDB, and backfills replace
+the same S3 objects. Logs Insights scans and S3 storage add usage-based charges.
 
 **Cost and the $20 usage budget.** At list rates, 16 custom metrics are about $4.80/month.
 The eight latency/health alarms each evaluate one metric, while the four error-rate alarms
@@ -243,3 +294,6 @@ for g in gateway order payment inventory loadgen backend frontend postgres; do a
 ```
 
 The DynamoDB table is separate and is not deleted by this.
+Step 6 also creates an EventBridge rule, Lambda function and role, SQS queue, and S3 bucket;
+remove those separately if retiring the demo. The S3 bucket contains incident evidence,
+so inspect it before deleting it.

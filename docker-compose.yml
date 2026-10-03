@@ -71,6 +71,7 @@ services:
       INVENTORY_URL: http://inventory:8000
       AWS_REGION: ${AWS_REGION:-us-east-2}
       INCIDENT_AWS_PROFILE: ${AWS_PROFILE:-}  # from .env; empty means default credentials
+      INCIDENT_QUEUE_URL: ${INCIDENT_QUEUE_URL:-}
     volumes:
       # Reuse your local `aws login` session. Writable so the SDK can refresh it.
       - ~/.aws:/home/appuser/.aws
