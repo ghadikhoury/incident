@@ -29,7 +29,9 @@ IAM role:       the instance may read/write the incident-store table, nothing el
 Run from the repo root in Git Bash (or any bash), logged in with `aws login --profile incident`.
 
 ```bash
-export AWS_PROFILE=incident AWS_REGION=us-east-2
+# MSYS_NO_PATHCONV=1 stops Git Bash on Windows from rewriting arguments such as /dev/sda1
+# and /aws/service/... into Windows paths (harmless elsewhere).
+export AWS_PROFILE=incident AWS_REGION=us-east-2 MSYS_NO_PATHCONV=1
 ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
 MY_IP=$(curl -s https://checkip.amazonaws.com)
 
@@ -51,8 +53,9 @@ aws ec2 authorize-security-group-ingress --group-id "$SG_ID" --ip-permissions \
 
 # 3. SSH key pair (the private key stays on your machine, never in git)
 mkdir -p ~/.ssh
+# (tr: on Windows the CLI prints \r\n line endings, which OpenSSH can't read)
 aws ec2 create-key-pair --key-name incident-ec2 --key-type ed25519 \
-  --query KeyMaterial --output text > ~/.ssh/incident-ec2.pem
+  --query KeyMaterial --output text | tr -d '\r' > ~/.ssh/incident-ec2.pem
 chmod 600 ~/.ssh/incident-ec2.pem  # Windows: icacls %USERPROFILE%\.ssh\incident-ec2.pem /inheritance:r /grant:r "%USERNAME%:R"
 
 # 4. Launch (latest Ubuntu 24.04 image, 20 GB encrypted disk)
@@ -80,6 +83,7 @@ again: a new instance profile takes a moment to become visible to EC2.
 ## Everyday operations
 
 ```bash
+export AWS_PROFILE=incident AWS_REGION=us-east-2 MSYS_NO_PATHCONV=1
 INSTANCE_ID=$(aws ec2 describe-instances --filters Name=tag:Name,Values=incident \
   Name=instance-state-name,Values=pending,running,stopping,stopped \
   --query 'Reservations[0].Instances[0].InstanceId' --output text)
