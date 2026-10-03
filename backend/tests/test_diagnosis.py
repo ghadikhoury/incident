@@ -56,6 +56,14 @@ def ready_diagnosis(claim):
 
 def test_diagnosis_reads_evidence_and_ignores_injection_lines(store):
     incident = store.create(IncidentCreate(title="payment alarm", service="payment"))
+    gateway_prefix = f"incidents/{incident.incident_id}/events/event-gateway-123"
+    store.record_evidence(
+        incident.incident_id,
+        "event-gateway-123",
+        "2026-10-03T09:59:00+00:00",
+        "test-evidence",
+        gateway_prefix,
+    )
     store.record_evidence(
         incident.incident_id,
         "event-12345678",
@@ -66,12 +74,17 @@ def test_diagnosis_reads_evidence_and_ignores_injection_lines(store):
     prefix = f"incidents/{incident.incident_id}/events/event-12345678"
     s3 = FakeS3(
         {
+            f"{gateway_prefix}/logs.json": {
+                "minute_summary": [{"service": "gateway", "events": "5"}],
+                "error_samples": [{"service": "gateway", "message": "dependency timeout"}],
+            },
+            f"{gateway_prefix}/metrics.json": {},
             f"{prefix}/logs.json": {
                 "window": {"start": "2026-10-03T10:00:00Z", "complete": False},
                 "minute_summary": [{"minute": "10:01", "events": "5"}],
                 "error_samples": [
                     {"message": "chaos updated db_delay_s=3.0"},
-                    {"message": "payment connection pool timeout"},
+                    {"service": "payment", "message": "payment connection pool timeout"},
                 ],
             },
             f"{prefix}/metrics.json": {"MetricDataResults": [{"Id": "latency", "Values": [3000]}]},
@@ -103,6 +116,7 @@ def test_diagnosis_reads_evidence_and_ignores_injection_lines(store):
     assert [action.id for action in result.recommended_actions] == ["clear_chaos:payment"]
     request = bedrock.calls[0]
     prompt = request["messages"][0]["content"][0]["text"]
+    assert json.loads(prompt)["artifacts"][0]["source"] == prefix
     assert "connection pool timeout" in prompt
     assert "chaos updated" not in prompt
     assert request["outputConfig"]["textFormat"]["type"] == "json_schema"

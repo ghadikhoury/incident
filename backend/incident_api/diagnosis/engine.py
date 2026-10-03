@@ -11,7 +11,7 @@ from incident_api import config
 from incident_api.models import Diagnosis, Incident, RecommendedAction, TimelineEvent
 
 MAX_OBJECT_BYTES = 256_000
-MAX_EVIDENCE_EVENTS = 3
+MAX_EVIDENCE_EVENTS = 12
 MAX_SAMPLES = 35
 MAX_PROMPT_CHARS = 24_000
 
@@ -147,6 +147,15 @@ class DiagnosisEngine:
                     "metric_data": metrics.get("MetricDataResults", [])[:4],
                 }
             )
+        root = incident.probable_root or incident.service
+        artifacts.sort(
+            key=lambda artifact: sum(
+                row.get("service") == root
+                for field in ("error_samples", "minute_summary")
+                for row in artifact[field]
+            ),
+            reverse=True,
+        )
         facts = {
             "incident": incident.model_dump(mode="json", exclude={"diagnosis"}),
             "timeline": [event.model_dump() for event in timeline if event.kind != "evidence"][
@@ -200,7 +209,6 @@ class DiagnosisEngine:
         content = response["output"]["message"]["content"]
         text = "".join(block.get("text", "") for block in content)
         output = ModelDiagnosis.model_validate_json(text)
-        root = incident.probable_root or incident.service
         recommendations = []
         for action in output.recommended_actions:
             if action.service != root or action.service not in allowed_services:
