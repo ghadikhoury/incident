@@ -1,0 +1,62 @@
+[
+  {
+    "case": "db_slow",
+    "service": "payment",
+    "started_at": "2026-10-03T17:18:42.435108+00:00",
+    "incident_id": "INC-1012",
+    "time_to_detect_s": 85.2,
+    "alarms_per_incident": 7,
+    "probable_root": "payment",
+    "root_service_correct": true,
+    "ai_status": "UNAVAILABLE",
+    "ai_likely_root_cause": null,
+    "ai_root_cause_correct": null,
+    "recovered": true,
+    "error": null
+  },
+  {
+    "case": "intermittent",
+    "service": "inventory",
+    "started_at": "2026-10-03T17:46:03.729158+00:00",
+    "incident_id": "INC-1015",
+    "time_to_detect_s": 140.3,
+    "alarms_per_incident": 3,
+    "probable_root": "inventory",
+    "root_service_correct": true,
+    "ai_status": "UNAVAILABLE",
+    "ai_likely_root_cause": null,
+    "ai_root_cause_correct": null,
+    "recovered": true,
+    "error": null
+  },
+  {
+    "case": "cpu",
+    "service": "inventory",
+    "started_at": "2026-10-03T18:14:05.895564+00:00",
+    "incident_id": "INC-1018",
+    "time_to_detect_s": 120.3,
+    "alarms_per_incident": 5,
+    "probable_root": "inventory",
+    "root_service_correct": true,
+    "ai_status": "UNAVAILABLE",
+    "ai_likely_root_cause": null,
+    "ai_root_cause_correct": null,
+    "recovered": true,
+    "error": null
+  },
+  {
+    "case": "crash",
+    "service": "payment",
+    "started_at": "2026-10-03T18:03:56.469000+00:00",
+    "incident_id": "INC-1017",
+    "time_to_detect_s": 150.4,
+    "alarms_per_incident": 3,
+    "probable_root": "payment",
+    "root_service_correct": true,
+    "ai_status": "UNAVAILABLE",
+    "ai_likely_root_cause": null,
+    "ai_root_cause_correct": null,
+    "recovered": true,
+    "error": null
+  }
+]
