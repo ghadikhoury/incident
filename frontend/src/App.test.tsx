@@ -68,7 +68,7 @@ it('loads incidents and applies acknowledge/resolve responses while the socket n
   expect(await screen.findByText('Payment latency spike')).toBeTruthy()
   expect(requests).toContain('GET /api/incidents')
   fireEvent.click(screen.getByRole('button', { name: 'Acknowledge' }))
-  await waitFor(() => expect(screen.getByText('ACKNOWLEDGED')).toBeTruthy())
+  await waitFor(() => expect(screen.getAllByText('ACKNOWLEDGED').length).toBeGreaterThan(0))
   expect(screen.queryByRole('button', { name: 'Acknowledge' })).toBeNull()
   fireEvent.click(screen.getByRole('button', { name: 'Resolve' }))
   await waitFor(() => expect(screen.getByText('No active incidents.')).toBeTruthy())

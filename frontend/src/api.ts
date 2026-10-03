@@ -24,6 +24,27 @@ export interface Incident {
   downstream_services?: string[]
   correlation_label?: string | null
   severity_reason?: string | null
+  diagnosis?: Diagnosis | null
+}
+
+export interface Recommendation {
+  id: string
+  action: 'clear_chaos'
+  service: string
+  reason: string
+  status: 'PENDING' | 'APPROVED' | 'EXECUTING' | 'REJECTED' | 'SUCCEEDED' | 'FAILED'
+  decided_by: string | null
+  changed_at: string | null
+}
+
+export interface Diagnosis {
+  status: 'RUNNING' | 'READY' | 'UNAVAILABLE'
+  claimed_at: string
+  summary: string | null
+  likely_root_cause: string | null
+  confidence: 'low' | 'medium' | 'high' | null
+  evidence: string[]
+  recommended_actions: Recommendation[]
 }
 
 export interface Alert {
@@ -106,6 +127,14 @@ export const api = {
   injectFailure: (service: string, failure: FailureType) =>
     request<unknown>('POST', '/api/simulation/failure', { service, failure }),
   recover: (service: string) => request<unknown>('POST', '/api/simulation/recover', { service }),
+  decideRecommendation: (id: string, actionId: string, decision: 'approve' | 'reject', actor: string) =>
+    request<Incident>(
+      'POST',
+      `/api/incidents/${encodeURIComponent(id)}/recommendations/${encodeURIComponent(actionId)}/${decision}`,
+      { actor },
+    ),
+  retryDiagnosis: (id: string, actor: string) =>
+    request<Incident>('POST', `/api/incidents/${encodeURIComponent(id)}/diagnosis/retry`, { actor }),
 }
 
 export function liveUrl(location: Location = window.location): string {

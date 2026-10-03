@@ -44,6 +44,7 @@ it('shows probable root, downstream impact, severity reason, and correlated aler
       busy={false}
       onAcknowledge={() => {}}
       onResolve={() => {}}
+      onSelect={() => {}}
     />,
   )
   expect(screen.getByText('PROBABLE CASCADING FAILURE')).toBeTruthy()

@@ -11,6 +11,8 @@ AWS_REGION = os.getenv("AWS_REGION", "us-east-2")
 # boto3 uses its default credential chain, e.g. the EC2 instance role in production.
 AWS_PROFILE = os.getenv("INCIDENT_AWS_PROFILE") or None
 QUEUE_URL = os.getenv("INCIDENT_QUEUE_URL") or None
+EVIDENCE_BUCKET = os.getenv("INCIDENT_EVIDENCE_BUCKET") or None
+BEDROCK_MODEL_ID = os.getenv("BEDROCK_MODEL_ID", "openai.gpt-oss-20b-1:0")
 HEALTH_INTERVAL_S = float(os.getenv("HEALTH_INTERVAL_S", "3"))
 HEALTH_TIMEOUT_S = float(os.getenv("HEALTH_TIMEOUT_S", "2"))
 

@@ -8,9 +8,10 @@ interface Props {
   busy: boolean
   onAcknowledge: (id: string) => void
   onResolve: (id: string) => void
+  onSelect: (id: string) => void
 }
 
-export function IncidentTable({ incidents, now, busy, onAcknowledge, onResolve }: Props) {
+export function IncidentTable({ incidents, now, busy, onAcknowledge, onResolve, onSelect }: Props) {
   const [showResolved, setShowResolved] = useState(false)
   const visible = showResolved ? incidents : incidents.filter((i) => i.status !== 'RESOLVED')
   const activeCount = incidents.filter((i) => i.status !== 'RESOLVED').length
@@ -93,6 +94,7 @@ export function IncidentTable({ incidents, now, busy, onAcknowledge, onResolve }
                   <td>{incident.assigned_to ?? <span className="muted">unassigned</span>}</td>
                   <td className="mono">{formatAge(incident.created_at, now)}</td>
                   <td className="actions">
+                    <button onClick={() => onSelect(incident.incident_id)}>Review</button>
                     {incident.status === 'OPEN' && (
                       <button disabled={busy} onClick={() => onAcknowledge(incident.incident_id)}>
                         Acknowledge

@@ -1,7 +1,7 @@
 from enum import StrEnum
 from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 
 class Severity(StrEnum):
@@ -30,6 +30,28 @@ class Alert(BaseModel):
     threshold: float | None = None
 
 
+class RecommendedAction(BaseModel):
+    id: str
+    action: Literal["clear_chaos"]
+    service: str
+    reason: str
+    status: Literal["PENDING", "APPROVED", "EXECUTING", "REJECTED", "SUCCEEDED", "FAILED"] = (
+        "PENDING"
+    )
+    decided_by: str | None = None
+    changed_at: str | None = None
+
+
+class Diagnosis(BaseModel):
+    status: Literal["RUNNING", "READY", "UNAVAILABLE"]
+    claimed_at: str
+    summary: str | None = None
+    likely_root_cause: str | None = None
+    confidence: Literal["low", "medium", "high"] | None = None
+    evidence: list[str] = Field(default_factory=list)
+    recommended_actions: list[RecommendedAction] = Field(default_factory=list)
+
+
 class Incident(BaseModel):
     incident_id: str
     title: str
@@ -47,6 +69,7 @@ class Incident(BaseModel):
     downstream_services: list[str] = Field(default_factory=list)
     correlation_label: str | None = None
     severity_reason: str | None = None
+    diagnosis: Diagnosis | None = None
 
 
 class TimelineEvent(BaseModel):
@@ -83,3 +106,15 @@ class IncidentUpdate(BaseModel):
 class IncidentAction(BaseModel):
     actor: str | None = Actor
     note: str | None = Field(default=None, max_length=1000)
+
+
+class DiagnosisDecision(BaseModel):
+    actor: str = Field(min_length=1, max_length=64)
+
+    @field_validator("actor")
+    @classmethod
+    def nonblank_actor(cls, value: str) -> str:
+        actor = value.strip()
+        if not actor:
+            raise ValueError("actor must not be blank")
+        return actor

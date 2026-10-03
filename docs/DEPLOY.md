@@ -269,6 +269,41 @@ For an end-to-end check, inject `db_slow` on payment and wait for the cascade:
 one incident should show payment as probable root, order as downstream, and
 multiple alerts. Recover payment and resolve the incident when finished.
 
+## Step 8: AI diagnosis and approved remediation
+
+Run `AWS_PROFILE=incident python deploy/setup_diagnosis.py` from the Step 8 branch
+before deploying it to EC2 with `sudo /opt/incident/deploy/update.sh <branch>`.
+The setup script updates only the backend instance role: it can read saved incident
+evidence and invoke `openai.gpt-oss-20b-1:0` in us-east-2. The evidence bucket name
+defaults to `incident-evidence-<AWS account ID>`; set `INCIDENT_EVIDENCE_BUCKET` in
+`.env` only if the bucket differs. `BEDROCK_MODEL_ID` is configurable, but a different
+model also needs its ARN added to `deploy/iam/instance-policy.json` and
+`deploy/setup_diagnosis.py` rerun.
+
+After the first alarm, the backend waits 100 seconds for the cascade's later alarms
+and evidence before diagnosing it. It reads
+bounded S3 log and metric excerpts, sends structured facts to Bedrock Converse, and
+stores the JSON result with the incident. If Bedrock is unavailable, the incident
+and its observed alerts stay visible with **AI analysis unavailable**. An engineer
+can use **Retry analysis** after the model becomes available; that request is logged
+and starts immediately. A stale worker claim is retried after five minutes. The
+dashboard distinguishes **Observed facts**
+from **AI inference**. Model output can only suggest `clear_chaos` on the root
+monitored service; it cannot run commands or call AWS. An engineer must enter a name
+and click **Approve and run** or **Reject**. The decision and outcome are recorded
+on the timeline. Rejected suggestions never reach a service; approved resets are
+idempotent and a stranded approved/executing reset is retried by the backend.
+
+For a live check, inject `db_slow` on payment, wait for a CloudWatch incident and
+its diagnosis, inspect the cited pool/timeout evidence, then approve the suggested
+payment reset. Verify payment's chaos state returns to zero and the related alarms
+return to OK before resolving the incident. Bedrock is a paid, quota-controlled
+service. On 2026-10-03 this AWS account reported **zero on-demand requests/minute**
+for the in-region structured-output models checked, so Bedrock calls returned
+`ThrottlingException` before a diagnosis could be produced. A positive applied
+Bedrock model quota is required for this live check; until then the unavailable
+state is expected.
+
 **Cost and the $20 usage budget.** At list rates, 16 custom metrics are about $4.80/month.
 The eight latency/health alarms each evaluate one metric, while the four error-rate alarms
 each evaluate two: **16 alarm-metric units**, about $1.60/month before any free allowance.
