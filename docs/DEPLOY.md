@@ -71,6 +71,16 @@ retires the old named resources, deploys CDK, and restores the data. The CDK
 template has been tested locally; a destructive fresh deployment in the
 current account is pending authorization.
 
+When upgrading an instance from a revision older than dashboard login, first
+fetch and check out the new branch, run
+`sudo /opt/incident/deploy/setup-dashboard-auth.sh`, then run
+`sudo /opt/incident/deploy/update.sh <branch>`. A running old `update.sh`
+cannot execute lines added to the new revision after its checkout; following
+this order creates the bind-mounted credential file before Compose starts.
+If an old updater has already created `/etc/incident/dashboard.htpasswd` as
+an empty directory, run the new updater again; it removes that directory and
+rebinds the frontend to the generated file.
+
 **Account decision:** keep the AWS Free Plan for this demo. Before inviting
 real users, the account owner should confirm the Paid Plan upgrade, set a
 monthly spend limit and billing alert, and obtain enough Bedrock quota to
