@@ -4,6 +4,7 @@ import threading
 import time
 import uuid
 from datetime import UTC, datetime, timedelta
+from decimal import Decimal
 
 import boto3
 from boto3.dynamodb.conditions import Key
@@ -53,6 +54,17 @@ def _to_incident(item: dict) -> Incident:
     return Incident.model_validate(item)
 
 
+def _dynamo_value(value):
+    """DynamoDB rejects Python floats, including those nested in alert snapshots."""
+    if isinstance(value, float):
+        return Decimal(str(value))
+    if isinstance(value, dict):
+        return {key: _dynamo_value(inner) for key, inner in value.items()}
+    if isinstance(value, list):
+        return [_dynamo_value(inner) for inner in value]
+    return value
+
+
 Event = tuple[str, str]  # (kind, message) of a timeline entry
 
 
@@ -89,7 +101,9 @@ class IncidentStore:
                 time.sleep(0.025 * (attempt + 1))
         raise RuntimeError("unreachable incident creation retry state")
 
-    def automatic_incident_actions(self, data: IncidentCreate) -> tuple[Incident, list[dict]]:
+    def automatic_incident_actions(
+        self, data: IncidentCreate, initial_fields: dict | None = None
+    ) -> tuple[Incident, list[dict]]:
         """Prepare a new incident and counter increment for one atomic transaction.
 
         A competing writer invalidates the counter condition; callers retry with a fresh
@@ -99,7 +113,7 @@ class IncidentStore:
             Key={"pk": "COUNTER", "sk": "INCIDENT"}, ConsistentRead=True
         ).get("Item")
         value = int(current["value"]) if current else 0
-        incident, put = self._new_incident(data, f"INC-{1001 + value}")
+        incident, put = self._new_incident(data, f"INC-{1001 + value}", initial_fields)
         counter = {
             "Update": {
                 "TableName": self.table.name,
@@ -117,20 +131,29 @@ class IncidentStore:
         }
         return incident, [counter, put]
 
-    def _new_incident(self, data: IncidentCreate, incident_id: str) -> tuple[Incident, dict]:
+    def _new_incident(
+        self, data: IncidentCreate, incident_id: str, initial_fields: dict | None = None
+    ) -> tuple[Incident, dict]:
         now = now_iso()
-        incident = Incident(
-            incident_id=incident_id,
-            title=data.title,
-            service=data.service,
-            severity=data.severity,
-            status=Status.OPEN,
-            trigger=data.trigger,
-            summary=data.summary,
-            created_at=now,
-            updated_at=now,
+        incident = Incident.model_validate(
+            {
+                "incident_id": incident_id,
+                "title": data.title,
+                "service": data.service,
+                "severity": data.severity,
+                "status": Status.OPEN,
+                "trigger": data.trigger,
+                "summary": data.summary,
+                "created_at": now,
+                "updated_at": now,
+                **(initial_fields or {}),
+            }
         )
-        item = {k: v for k, v in incident.model_dump(mode="json").items() if v is not None}
+        item = {
+            k: _dynamo_value(v)
+            for k, v in incident.model_dump(mode="json").items()
+            if v is not None
+        }
         item |= {
             "pk": _pk(incident_id),
             "sk": "META",
@@ -174,6 +197,23 @@ class IncidentStore:
 
     def transact(self, items: list[dict]) -> None:
         self._transact(items)
+
+    def correlation_update_action(self, incident: Incident, fields: dict) -> dict:
+        """Update derived fields only if the incident has not changed since read."""
+        changes = {**fields, "updated_at": now_iso()}
+        names = {f"#{name}": name for name in [*changes, "status"]}
+        values = {f":{name}": _dynamo_value(value) for name, value in changes.items()}
+        values.update({":old": incident.updated_at, ":resolved": Status.RESOLVED.value})
+        return {
+            "Update": {
+                "TableName": self.table.name,
+                "Key": self.incident_key(incident.incident_id),
+                "UpdateExpression": "SET " + ", ".join(f"#{name} = :{name}" for name in changes),
+                "ConditionExpression": "#status <> :resolved AND #updated_at = :old",
+                "ExpressionAttributeNames": names,
+                "ExpressionAttributeValues": values,
+            }
+        }
 
     def record_evidence(
         self, incident_id: str, event_id: str, at: str, bucket: str, prefix: str

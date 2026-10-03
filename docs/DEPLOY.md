@@ -235,6 +235,40 @@ missed while a browser was disconnected. Inspect the failure queue before replay
 failed alarm or backfill: alarm events are idempotent in DynamoDB, and backfills replace
 the same S3 objects. Logs Insights scans and S3 storage add usage-based charges.
 
+## Step 7: dependency-aware incidents
+
+`backend/incident_api/services.yaml` defines the service graph and reference p90
+latencies. The API serves the graph at `/api/services/graph` and direct, transitive,
+and reverse dependencies at `/api/services/<name>/dependencies`. The dashboard draws
+the graph and shows each automatic incident's alerts, probable root, downstream
+services, and severity reason. **PROBABLE CASCADING FAILURE** is an inference from
+observed alarms, not a confirmed diagnosis.
+
+The Lambda correlates alarm transitions within a sliding ten-minute event-time
+window. One service must depend on the other, directly or transitively. Sibling
+services such as payment and inventory stay in separate incidents. A conditional
+DynamoDB write serializes simultaneous alarm events, and each incident stores one
+current alert per CloudWatch alarm. The probable root is the alerted service on
+which the most other alerted services depend; the first breaching metric period
+(or the alarm transition time when metric timestamps are absent) breaks ties.
+Resolved incidents are never reused.
+
+Severity is recalculated as alarms fire or recover: SEV-1 for a gateway outage or
+very high gateway error rate, failed health checks on two services, or major impact
+across three services; SEV-2 for one failed health check, at least 50% 5xx errors,
+or p90 latency at least twice the alarm threshold and ten times its configured
+baseline; SEV-3 for other error or latency alarms; SEV-4 for missing monitoring
+data or when all alerts recover. The rules use values in CloudWatch alarm events,
+not simulation settings or an AI model.
+
+To deploy before merge, run `AWS_PROFILE=incident python deploy/setup_pipeline.py
+--instance-id <instance-id>` from the branch, then run `sudo
+/opt/incident/deploy/update.sh <branch>` on EC2. After merge, use `main`. The
+Lambda package includes the graph config and PyYAML; no table migration is needed.
+For an end-to-end check, inject `db_slow` on payment and wait for the cascade:
+one incident should show payment as probable root, order as downstream, and
+multiple alerts. Recover payment and resolve the incident when finished.
+
 **Cost and the $20 usage budget.** At list rates, 16 custom metrics are about $4.80/month.
 The eight latency/health alarms each evaluate one metric, while the four error-rate alarms
 each evaluate two: **16 alarm-metric units**, about $1.60/month before any free allowance.

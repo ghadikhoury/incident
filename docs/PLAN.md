@@ -30,10 +30,17 @@ Incident is meant to be a genuine, usable product (startup-style), built on AWS 
 - [x] IAM role `incident-ec2`: DynamoDB `incident-store` access, plus log-write access to `/incident/*` after Step 5
 - [x] Survives stop/start (boot service); **stop it when not in use**
 
-**Step 5: in review** (PR #7 merged, PR #8 open): CloudWatch detection.
+**Step 5: done** (PRs #7 and #8): CloudWatch detection.
 - [x] Services and the backend's health monitor emit metrics in their log lines (EMF): `Latency`, `Requests`, `Errors`, `HealthCheckFailed` per service
 - [x] Logs shipped to `/incident/<service>` on EC2; 12 alarms (latency p90, 5xx rate, health × 4 services)
 - [x] Verified live: `db_slow` → `incident-payment-latency` ALARM after 103 s (then errors, health, and order/gateway as the cascade); all back to OK 216 s after recovery
+
+**Step 6: done** (PR #9): alarm transitions create durable incidents and filtered
+evidence, notify the live dashboard, and backfill the full evidence window;
+failed events go to SQS.
+
+**Step 7: in review:** dependency graph, deterministic correlation, probable root,
+alert records, severity rules, and dashboard display.
 
 ---
 

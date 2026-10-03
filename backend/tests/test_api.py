@@ -47,6 +47,17 @@ def test_unknown_incident_is_404(client):
     assert client.patch("/api/incidents/INC-9999", json={"severity": "SEV-1"}).status_code == 404
 
 
+def test_dependency_graph_api(client):
+    graph = {node["name"]: node for node in client.get("/api/services/graph").json()}
+    assert set(graph) == {"gateway", "order", "payment", "inventory", "postgres"}
+    assert graph["order"]["depends_on"] == ["payment", "inventory"]
+    assert graph["postgres"]["monitored"] is False
+    dependencies = client.get("/api/services/gateway/dependencies").json()
+    assert dependencies["direct"] == ["order"]
+    assert dependencies["transitive"] == ["inventory", "order", "payment", "postgres"]
+    assert client.get("/api/services/unknown/dependencies").status_code == 404
+
+
 def test_patch_updates_fields_and_records_timeline(client):
     incident_id = create(client)["incident_id"]
     response = client.patch(

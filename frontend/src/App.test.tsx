@@ -49,6 +49,7 @@ it('loads incidents and applies acknowledge/resolve responses while the socket n
       let payload: unknown
       if (input === '/api/incidents' && method === 'GET') payload = [original]
       else if (input === '/api/services') payload = [service]
+      else if (input === '/api/services/graph') payload = []
       else if (input.endsWith('/acknowledge')) {
         payload = { ...original, status: 'ACKNOWLEDGED', updated_at: '2026-10-02T12:01:00Z' }
       } else if (input.endsWith('/resolve')) {
