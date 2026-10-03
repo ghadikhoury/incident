@@ -31,7 +31,13 @@ def reset_chaos():
 
 
 def test_no_chaos_by_default():
-    assert client.get("/chaos").json() == {"latency_ms": 0, "error_rate": 0.0, "db_delay_s": 0.0}
+    assert client.get("/chaos").json() == {
+        "latency_ms": 0,
+        "error_rate": 0.0,
+        "db_delay_s": 0.0,
+        "intermittent_every": 0,
+        "cpu_ms": 0,
+    }
     assert client.get("/work").status_code == 200
 
 
@@ -81,6 +87,23 @@ def test_db_delay_accepted_with_database():
 
 def test_invalid_values_rejected():
     assert client.post("/chaos", json={"error_rate": 1.5}).status_code == 422
+    assert client.post("/chaos", json={"cpu_ms": 5001}).status_code == 422
+
+
+def test_intermittent_fails_every_second_request_and_resets():
+    client.post("/chaos", json={"intermittent_every": 2})
+    assert [client.get("/work").status_code for _ in range(4)] == [200, 500, 200, 500]
+    client.delete("/chaos")
+    assert client.get("/work").status_code == 200
+
+
+def test_cpu_work_is_bounded_and_clears():
+    client.post("/chaos", json={"cpu_ms": 30})
+    start = time.perf_counter()
+    assert client.get("/work").status_code == 200
+    assert time.perf_counter() - start >= 0.025
+    client.delete("/chaos")
+    assert client.get("/chaos").json()["cpu_ms"] == 0
 
 
 def test_crash_exits_process_after_responding(monkeypatch):

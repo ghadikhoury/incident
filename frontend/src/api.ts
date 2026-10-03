@@ -3,7 +3,7 @@
 export type Severity = 'SEV-1' | 'SEV-2' | 'SEV-3' | 'SEV-4'
 export type Status = 'OPEN' | 'ACKNOWLEDGED' | 'INVESTIGATING' | 'MITIGATING' | 'RESOLVED'
 export type HealthStatus = 'healthy' | 'unhealthy' | 'down' | 'unknown'
-export type FailureType = 'db_slow' | 'latency' | 'error_rate' | 'crash'
+export type FailureType = 'db_slow' | 'latency' | 'error_rate' | 'crash' | 'intermittent' | 'cpu'
 
 export const SEVERITIES: Severity[] = ['SEV-1', 'SEV-2', 'SEV-3', 'SEV-4']
 
@@ -26,6 +26,22 @@ export interface Incident {
   severity_reason?: string | null
   diagnosis?: Diagnosis | null
 }
+
+export interface TimelineEvent {
+  at: string
+  kind: string
+  message: string
+  actor: string | null
+}
+
+export interface IncidentDetail extends Incident {
+  timeline: TimelineEvent[]
+}
+
+export interface MetricPoint { at: string; value: number }
+export interface MetricSeries { service: string; metric: 'Latency' | 'Requests' | 'Errors'; points: MetricPoint[] }
+export interface IncidentMetrics { start: string; end: string; series: MetricSeries[] }
+export interface IncidentLogs { source: string; rows: Record<string, string>[] }
 
 export interface Recommendation {
   id: string
@@ -69,6 +85,8 @@ export interface Chaos {
   latency_ms: number
   error_rate: number
   db_delay_s: number
+  intermittent_every: number
+  cpu_ms: number
 }
 
 export interface ServiceHealth {
@@ -119,6 +137,14 @@ export const api = {
   services: () => request<ServiceHealth[]>('GET', '/api/services'),
   serviceGraph: () => request<ServiceNode[]>('GET', '/api/services/graph'),
   incidents: () => request<Incident[]>('GET', '/api/incidents'),
+  incident: (id: string) => request<IncidentDetail>('GET', `/api/incidents/${encodeURIComponent(id)}`),
+  incidentMetrics: (id: string) => request<IncidentMetrics>('GET', `/api/incidents/${encodeURIComponent(id)}/metrics`),
+  incidentLogs: (id: string) => request<IncidentLogs>('GET', `/api/incidents/${encodeURIComponent(id)}/logs`),
+  searchIncidentLogs: (id: string, query: string) => request<IncidentLogs>(
+    'GET', `/api/incidents/${encodeURIComponent(id)}/log-search?q=${encodeURIComponent(query)}`,
+  ),
+  updateIncident: (id: string, changes: { assigned_to?: string | null; severity?: Severity }, actor: string) =>
+    request<Incident>('PATCH', `/api/incidents/${encodeURIComponent(id)}`, { ...changes, actor }),
   createIncident: (incident: NewIncident) => request<Incident>('POST', '/api/incidents', incident),
   acknowledge: (id: string, actor: string) =>
     request<Incident>('POST', `/api/incidents/${id}/acknowledge`, actorBody(actor)),

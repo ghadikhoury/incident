@@ -118,11 +118,11 @@ describe('mergeIncidents', () => {
 describe('describeChaos', () => {
   it('is null when nothing is injected', () => {
     expect(describeChaos(null)).toBeNull()
-    expect(describeChaos({ latency_ms: 0, error_rate: 0, db_delay_s: 0 })).toBeNull()
+    expect(describeChaos({ latency_ms: 0, error_rate: 0, db_delay_s: 0, intermittent_every: 0, cpu_ms: 0 })).toBeNull()
   })
 
   it('lists active failures', () => {
-    expect(describeChaos({ latency_ms: 3000, error_rate: 0.4, db_delay_s: 3 })).toBe(
+    expect(describeChaos({ latency_ms: 3000, error_rate: 0.4, db_delay_s: 3, intermittent_every: 0, cpu_ms: 0 })).toBe(
       'DB +3s, +3000ms, 40% errors',
     )
   })

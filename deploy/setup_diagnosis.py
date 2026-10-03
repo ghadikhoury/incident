@@ -1,4 +1,4 @@
-"""Grant the EC2 backend read-only evidence access and one Bedrock model.
+"""Apply the EC2 backend IAM policy for diagnosis and incident telemetry.
 
 Run: AWS_PROFILE=incident python deploy/setup_diagnosis.py
 """
@@ -21,7 +21,7 @@ def main() -> None:
         PolicyName="incident-instance",
         PolicyDocument=json.dumps(document),
     )
-    print("Updated incident-ec2 role for evidence reads and in-region Bedrock diagnosis")
+    print("Updated incident-ec2 role for evidence, metrics, log search, and Bedrock")
 
 
 if __name__ == "__main__":

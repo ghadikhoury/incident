@@ -1,7 +1,10 @@
 """Builds a FastAPI app with the request logging and tracing every service shares."""
 
+import asyncio
+import contextlib
 import time
 import uuid
+from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
@@ -10,7 +13,7 @@ from common import chaos
 from common.context import RequestContext, current, reset_current, set_current
 from common.errors import ServiceError
 from common.logs import get_logger, setup_logging
-from common.metrics import request_metrics
+from common.metrics import cpu_utilization_line, request_metrics
 
 TRACE_HEADER = "x-trace-id"
 QUIET_PATHS = {"/health"}  # polled constantly; logging them would drown out real traffic
@@ -20,7 +23,32 @@ UNMETERED_PATHS = {"/chaos"}  # demo controls, not traffic: logged but kept out 
 def create_app(service: str, *, supports_db_chaos: bool = False, **kwargs) -> FastAPI:
     setup_logging(service)
     log = get_logger()
-    app = FastAPI(title=service, **kwargs)
+    original_lifespan = kwargs.pop("lifespan", None)
+
+    @asynccontextmanager
+    async def lifespan(app: FastAPI):
+        async def sample_cpu():
+            previous_wall, previous_cpu = time.perf_counter(), time.process_time()
+            while True:
+                await asyncio.sleep(10)
+                wall, cpu = time.perf_counter(), time.process_time()
+                percent = max(0.0, 100 * (cpu - previous_cpu) / (wall - previous_wall))
+                log.info("cpu sample", extra={"fields": cpu_utilization_line(service, percent)})
+                previous_wall, previous_cpu = wall, cpu
+
+        task = asyncio.create_task(sample_cpu())
+        try:
+            if original_lifespan:
+                async with original_lifespan(app):
+                    yield
+            else:
+                yield
+        finally:
+            task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
+
+    app = FastAPI(title=service, lifespan=lifespan, **kwargs)
     app.include_router(chaos.router(supports_db_delay=supports_db_chaos))
 
     @app.exception_handler(ServiceError)

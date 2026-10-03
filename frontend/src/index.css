@@ -449,6 +449,33 @@ button.danger {
   .analysis-columns { grid-template-columns: 1fr; }
 }
 
+/* Incident detail */
+.detail-page { display: flex; flex-direction: column; gap: 16px; padding: 16px 20px; }
+.detail-page > button:first-child { align-self: flex-start; }
+.detail-heading { display: flex; justify-content: space-between; gap: 24px; }
+.detail-heading h2 { color: var(--text); font-size: 20px; text-transform: none; }
+.detail-controls { display: flex; flex-wrap: wrap; align-items: end; gap: 8px; max-width: 560px; }
+.detail-controls label { display: flex; flex-direction: column; gap: 4px; color: var(--muted); }
+.detail-controls .status { align-self: center; margin-right: 8px; }
+.metric-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
+.metric-chart { border: 1px solid var(--border); border-radius: 6px; padding: 10px; min-width: 0; }
+.metric-chart h3 { margin: 0; font-size: 13px; }
+.metric-chart svg { width: 100%; height: auto; }
+.chart-axis { stroke: var(--muted); stroke-width: 1; }
+.chart-label { fill: var(--muted); font-size: 10px; }
+.chart-legend { display: flex; flex-wrap: wrap; gap: 12px; font-size: 12px; }
+.detail-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }
+.detail-grid li { margin-bottom: 8px; overflow-wrap: anywhere; }
+.detail-page input[aria-label="Search saved logs"] { width: min(100%, 480px); }
+.log-search { display: flex; flex-wrap: wrap; gap: 8px; }
+.log-list { max-height: 360px; overflow: auto; }
+.log-row { display: flex; flex-direction: column; gap: 4px; padding: 8px 0; border-bottom: 1px solid var(--border); overflow-wrap: anywhere; }
+.timeline { padding-left: 20px; }
+.timeline li { padding: 8px 0; border-bottom: 1px solid var(--border); overflow-wrap: anywhere; }
+.timeline time { display: inline-block; min-width: 170px; margin-right: 10px; }
+@media (max-width: 1000px) { .metric-grid { grid-template-columns: 1fr; } }
+@media (max-width: 700px) { .detail-heading, .detail-grid { display: block; } .detail-controls { margin-top: 16px; } }
+
 /* Demo panel */
 
 .demo h2:not(:first-child) {

@@ -304,7 +304,49 @@ for the in-region structured-output models checked, so Bedrock calls returned
 Bedrock model quota is required for this live check; until then the unavailable
 state is expected.
 
-**Cost and the $20 usage budget.** At list rates, 16 custom metrics are about $4.80/month.
+## Step 9: incident detail and measured scenarios
+
+From the Step 9 branch, run `AWS_PROFILE=incident python deploy/setup_diagnosis.py`
+on the operator's computer before deploying the branch. This reapplies the EC2 role
+policy with read-only `cloudwatch:GetMetricData` and bounded CloudWatch Logs Insights
+query permissions. Then run `sudo /opt/incident/deploy/update.sh <branch>` on EC2.
+
+Open an incident's **Review** page. Its charts request one-minute CloudWatch latency,
+request, and error data for the incident's correlated services. The initial log list
+comes from saved S3 error/warning excerpts; entering a term and clicking **Search
+CloudWatch** searches all matching log lines in the incident's 30-minute window.
+The search is limited to 200 lines, excludes injection-control lines, and runs only
+when requested. The page also shows related alerts, the dependency graph, AI analysis,
+the full timeline, and acknowledge, owner, severity, and resolve controls.
+
+The demo now supports `intermittent` (every second request fails) and `cpu` (2.3 seconds
+of bounded CPU work per request), as well as the earlier `crash` scenario. Each service
+also emits measured process CPU utilization every 10 seconds, so a CPU diagnosis can
+cite a real signal rather than injection settings. A crashed
+service cannot answer `/chaos`; restart its container with `sudo docker compose start
+<service>` from `/opt/incident`, then clear any remaining chaos settings if needed.
+
+The evaluation runner uses only the backend's localhost API and standard Python. Run it
+on EC2 from `/opt/incident` when all services are healthy and no incident is active:
+
+```bash
+python3 scenarios/run.py --cases db_slow,intermittent,cpu \
+  --output scenarios/results/step9.json
+# Include crash only when you intentionally allow the runner to restart its container:
+sudo python3 scenarios/run.py --cases crash --allow-crash-restart \
+  --output scenarios/results/crash.json
+```
+
+Each case injects one labeled fault, polls for the first new CloudWatch incident,
+waits for Step 8 analysis, restores the fault, waits for every attached alarm and
+service to recover, and resolves the incident. It stops after an incomplete case.
+The JSON and CSV outputs record detection seconds, alarm count, exact root-service
+correctness, AI status, and an explicit *keyword-pattern estimate* of AI cause
+correctness. A quota failure is `UNAVAILABLE` and has no AI correctness score. Review
+the diagnosis text manually before treating that estimate as an accuracy claim.
+The polling interval adds up to five seconds to measured detection latency.
+
+**Cost and the $20 usage budget.** At list rates, 20 custom metrics are about $6/month.
 The eight latency/health alarms each evaluate one metric, while the four error-rate alarms
 each evaluate two: **16 alarm-metric units**, about $1.60/month before any free allowance.
 CloudWatch Logs also bills for ingestion. A 15-minute sample of this project's eight live

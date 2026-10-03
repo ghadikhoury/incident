@@ -6,6 +6,8 @@ const FAILURES: { value: FailureType; label: string }[] = [
   { value: 'latency', label: 'Latency +3 s' },
   { value: 'error_rate', label: '40% errors' },
   { value: 'crash', label: 'Crash' },
+  { value: 'intermittent', label: 'Every other request fails' },
+  { value: 'cpu', label: 'CPU pressure' },
 ]
 
 interface Props {

@@ -29,6 +29,24 @@
       "Resource": "arn:aws:s3:::incident-evidence-ACCOUNT_ID/incidents/*"
     },
     {
+      "Sid": "ReadIncidentMetricGraphs",
+      "Effect": "Allow",
+      "Action": "cloudwatch:GetMetricData",
+      "Resource": "*"
+    },
+    {
+      "Sid": "SearchIncidentServiceLogs",
+      "Effect": "Allow",
+      "Action": "logs:StartQuery",
+      "Resource": "arn:aws:logs:us-east-2:ACCOUNT_ID:log-group:/incident/*"
+    },
+    {
+      "Sid": "ReadLogSearchResults",
+      "Effect": "Allow",
+      "Action": "logs:GetQueryResults",
+      "Resource": "*"
+    },
+    {
       "Sid": "DiagnoseWithInRegionBedrock",
       "Effect": "Allow",
       "Action": "bedrock:InvokeModel",

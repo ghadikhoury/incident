@@ -7,7 +7,7 @@ from pydantic import BaseModel
 
 from incident_api.config import MonitoredService
 
-FailureType = Literal["db_slow", "latency", "error_rate", "crash"]
+FailureType = Literal["db_slow", "latency", "error_rate", "crash", "intermittent", "cpu"]
 
 # What each failure sends to the service's /chaos endpoint.
 FAILURES: dict[str, dict] = {
@@ -15,6 +15,8 @@ FAILURES: dict[str, dict] = {
     "latency": {"latency_ms": 3000},
     "error_rate": {"error_rate": 0.4},
     "crash": {"crash": True},
+    "intermittent": {"intermittent_every": 2},
+    "cpu": {"cpu_ms": 2300},
 }
 DB_ONLY_FAILURES = {"db_slow"}
 DB_SERVICES = {"payment"}

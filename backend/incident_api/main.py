@@ -12,7 +12,7 @@ from datetime import UTC, datetime, timedelta
 
 import boto3
 import httpx
-from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, HTTPException, Query, WebSocket, WebSocketDisconnect
 from starlette.concurrency import run_in_threadpool
 
 from incident_api import config, simulation
@@ -31,6 +31,7 @@ from incident_api.models import (
     Status,
     TimelineEvent,
 )
+from incident_api.observability import IncidentTelemetry
 from incident_api.store import Conflict, IncidentStore, NotFound
 
 LOG = logging.getLogger(__name__)
@@ -45,6 +46,7 @@ def create_app(
     queue_url: str | None = config.QUEUE_URL,
     sqs_client=None,
     diagnosis_engine: DiagnosisEngine | None = None,
+    telemetry: IncidentTelemetry | None = None,
     diagnosis_delay_s: float = 100,
 ) -> FastAPI:
     store = store or IncidentStore.from_config()
@@ -309,6 +311,49 @@ def create_app(
         if await run_in_threadpool(store.get, incident_id) is None:
             raise HTTPException(404, f"incident {incident_id} not found")
         return await run_in_threadpool(store.timeline, incident_id)
+
+    @app.get("/api/incidents/{incident_id}/metrics")
+    async def incident_metrics(incident_id: str) -> dict:
+        incident = await run_in_threadpool(store.get, incident_id)
+        if incident is None:
+            raise HTTPException(404, f"incident {incident_id} not found")
+        try:
+            reader = telemetry or await run_in_threadpool(IncidentTelemetry.from_config)
+            return await run_in_threadpool(reader.metrics, incident)
+        except Exception as exc:
+            LOG.exception("Could not load metrics for %s", incident_id)
+            raise HTTPException(503, "Incident metrics are temporarily unavailable") from exc
+
+    @app.get("/api/incidents/{incident_id}/logs")
+    async def incident_logs(incident_id: str) -> dict:
+        incident = await run_in_threadpool(store.get, incident_id)
+        if incident is None:
+            raise HTTPException(404, f"incident {incident_id} not found")
+        timeline = await run_in_threadpool(store.timeline, incident_id)
+        if not any(event.kind == "evidence" for event in timeline):
+            return {"source": "saved CloudWatch error/warning excerpts", "rows": []}
+        try:
+            reader = telemetry or await run_in_threadpool(IncidentTelemetry.from_config)
+            return await run_in_threadpool(reader.logs, incident, timeline)
+        except Exception as exc:
+            LOG.exception("Could not load logs for %s", incident_id)
+            raise HTTPException(503, "Saved incident logs are temporarily unavailable") from exc
+
+    @app.get("/api/incidents/{incident_id}/log-search")
+    async def search_incident_logs(
+        incident_id: str, q: str = Query(min_length=1, max_length=100)
+    ) -> dict:
+        incident = await run_in_threadpool(store.get, incident_id)
+        if incident is None:
+            raise HTTPException(404, f"incident {incident_id} not found")
+        if not q.strip() or any(ord(char) < 32 for char in q):
+            raise HTTPException(400, "search must be 1-100 printable characters")
+        try:
+            reader = telemetry or await run_in_threadpool(IncidentTelemetry.from_config)
+            return await run_in_threadpool(reader.search_logs, incident, q)
+        except Exception as exc:
+            LOG.exception("Could not search CloudWatch logs for %s", incident_id)
+            raise HTTPException(503, "CloudWatch log search is temporarily unavailable") from exc
 
     @app.patch("/api/incidents/{incident_id}")
     async def update_incident(incident_id: str, body: IncidentUpdate) -> Incident:

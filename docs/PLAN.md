@@ -39,8 +39,15 @@ Incident is meant to be a genuine, usable product (startup-style), built on AWS 
 evidence, notify the live dashboard, and backfill the full evidence window;
 failed events go to SQS.
 
-**Step 7: in review:** dependency graph, deterministic correlation, probable root,
+**Step 7: done** (PR #10): dependency graph, deterministic correlation, probable root,
 alert records, severity rules, and dashboard display.
+
+**Step 8: merged** (PR #11): evidence-backed Bedrock diagnosis, safe recommendations,
+human approval, and retry. The live model call remains unverified because the AWS
+account returned a daily-token quota error; the code records `UNAVAILABLE` and the
+incident remains usable. A positive Bedrock quota is needed for the Step 8 live criterion.
+
+**Step 9: in progress:** incident detail and evaluation harness.
 
 ---
 
@@ -222,7 +229,7 @@ Each step = one branch + one PR. For each step Claude explains what we're doing,
 - Skip PRs only for trivial fixes like README typos.
 
 ## Cost expectations (paid from the $100 Free Plan credits)
-EC2 is about $0.02/hour while running, plus its disk and public IPv4 address. CloudWatch's 16 custom metrics and alarm-metric units are about $6.40/month at list rates before allowances; logs add usage-based ingestion and storage (the measured 5-request/second demo rate would ingest about 31 GB/month if left on continuously). A 24/7 deployment would exceed the **$20 usage budget**, even while Free Plan credits cover the charges, so stop the instance when not working. See [DEPLOY.md](DEPLOY.md) for the measurement and assumptions. Lambda, SQS, DynamoDB and S3 should be small at our scale; verify actual usage in Billing. Bedrock cost depends on the chosen model and usage.
+EC2 is about $0.02/hour while running, plus its disk and public IPv4 address. CloudWatch's 20 custom metrics and 16 alarm-metric units are about $7.60/month at list rates before allowances; logs add usage-based ingestion and storage (the measured 5-request/second demo rate would ingest about 31 GB/month if left on continuously). A 24/7 deployment would exceed the **$20 usage budget**, even while Free Plan credits cover the charges, so stop the instance when not working. See [DEPLOY.md](DEPLOY.md) for the measurement and assumptions. Lambda, SQS, DynamoDB and S3 should be small at our scale; verify actual usage in Billing. Bedrock cost depends on the chosen model and usage.
 
 ## Verification (final end-to-end demo)
 1. `cdk deploy` + `docker compose up -d` on EC2 → dashboard all green.
