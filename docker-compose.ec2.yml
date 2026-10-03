@@ -21,32 +21,35 @@ services:
   gateway:
     logging:
       <<: *cloudwatch
-      options: {<<: *cloudwatch-options, awslogs-group: /incident/gateway}
+      options: {<<: *cloudwatch-options, awslogs-group: "${INCIDENT_LOG_PREFIX:-/incident}/gateway"}
   order:
     logging:
       <<: *cloudwatch
-      options: {<<: *cloudwatch-options, awslogs-group: /incident/order}
+      options: {<<: *cloudwatch-options, awslogs-group: "${INCIDENT_LOG_PREFIX:-/incident}/order"}
   payment:
     logging:
       <<: *cloudwatch
-      options: {<<: *cloudwatch-options, awslogs-group: /incident/payment}
+      options: {<<: *cloudwatch-options, awslogs-group: "${INCIDENT_LOG_PREFIX:-/incident}/payment"}
   inventory:
     logging:
       <<: *cloudwatch
-      options: {<<: *cloudwatch-options, awslogs-group: /incident/inventory}
+      options: {<<: *cloudwatch-options, awslogs-group: "${INCIDENT_LOG_PREFIX:-/incident}/inventory"}
   loadgen:
     logging:
       <<: *cloudwatch
-      options: {<<: *cloudwatch-options, awslogs-group: /incident/loadgen}
+      options: {<<: *cloudwatch-options, awslogs-group: "${INCIDENT_LOG_PREFIX:-/incident}/loadgen"}
   backend:
     logging:
       <<: *cloudwatch
-      options: {<<: *cloudwatch-options, awslogs-group: /incident/backend}
+      options: {<<: *cloudwatch-options, awslogs-group: "${INCIDENT_LOG_PREFIX:-/incident}/backend"}
   frontend:
+    volumes:
+      - ./deploy/nginx-auth.conf:/etc/nginx/snippets/incident-auth.conf:ro
+      - /etc/incident/dashboard.htpasswd:/etc/nginx/.htpasswd:ro
     logging:
       <<: *cloudwatch
-      options: {<<: *cloudwatch-options, awslogs-group: /incident/frontend}
+      options: {<<: *cloudwatch-options, awslogs-group: "${INCIDENT_LOG_PREFIX:-/incident}/frontend"}
   postgres:
     logging:
       <<: *cloudwatch
-      options: {<<: *cloudwatch-options, awslogs-group: /incident/postgres}
+      options: {<<: *cloudwatch-options, awslogs-group: "${INCIDENT_LOG_PREFIX:-/incident}/postgres"}

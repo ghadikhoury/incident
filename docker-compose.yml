@@ -18,9 +18,10 @@ x-service: &service
 services:
   gateway:
     <<: *service
-    command: ["uvicorn", "gateway.app:app", "--host", "0.0.0.0", "--port", "8000", "--no-access-log"]
     environment:
+      INCIDENT_METRIC_NAMESPACE: ${INCIDENT_METRIC_NAMESPACE:-Incident}
       ORDER_URL: http://order:8000
+    command: ["uvicorn", "gateway.app:app", "--host", "0.0.0.0", "--port", "8000", "--no-access-log"]
     ports: ["127.0.0.1:8090:8000"]
     depends_on:
       order: {condition: service_healthy}
@@ -29,6 +30,7 @@ services:
     <<: *service
     command: ["uvicorn", "order.app:app", "--host", "0.0.0.0", "--port", "8000", "--no-access-log"]
     environment:
+      INCIDENT_METRIC_NAMESPACE: ${INCIDENT_METRIC_NAMESPACE:-Incident}
       INVENTORY_URL: http://inventory:8000
       PAYMENT_URL: http://payment:8000
     ports: ["127.0.0.1:8091:8000"]
@@ -40,6 +42,7 @@ services:
     <<: *service
     command: ["uvicorn", "payment.app:app", "--host", "0.0.0.0", "--port", "8000", "--no-access-log"]
     environment:
+      INCIDENT_METRIC_NAMESPACE: ${INCIDENT_METRIC_NAMESPACE:-Incident}
       DATABASE_URL: postgresql://incident:incident@postgres:5432/payments
       POOL_SIZE: "5"
     ports: ["127.0.0.1:8092:8000"]
@@ -48,6 +51,8 @@ services:
 
   inventory:
     <<: *service
+    environment:
+      INCIDENT_METRIC_NAMESPACE: ${INCIDENT_METRIC_NAMESPACE:-Incident}
     command: ["uvicorn", "inventory.app:app", "--host", "0.0.0.0", "--port", "8000", "--no-access-log"]
     ports: ["127.0.0.1:8093:8000"]
 
@@ -72,6 +77,10 @@ services:
       AWS_REGION: ${AWS_REGION:-us-east-2}
       INCIDENT_AWS_PROFILE: ${AWS_PROFILE:-}  # from .env; empty means default credentials
       INCIDENT_QUEUE_URL: ${INCIDENT_QUEUE_URL:-}
+      INCIDENT_TABLE: ${INCIDENT_TABLE:-incident-store}
+      INCIDENT_LOG_PREFIX: ${INCIDENT_LOG_PREFIX:-/incident}
+      INCIDENT_METRIC_NAMESPACE: ${INCIDENT_METRIC_NAMESPACE:-Incident}
+      INCIDENT_ALARM_PREFIX: ${INCIDENT_ALARM_PREFIX:-incident}
       INCIDENT_EVIDENCE_BUCKET: ${INCIDENT_EVIDENCE_BUCKET:-}
       BEDROCK_MODEL_ID: ${BEDROCK_MODEL_ID:-openai.gpt-oss-20b-1:0}
     volumes:
@@ -94,7 +103,7 @@ services:
     depends_on:
       backend: {condition: service_started}
     healthcheck:
-      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1/"]
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1/ready"]
       interval: 10s
       timeout: 3s
       retries: 3

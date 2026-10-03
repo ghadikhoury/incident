@@ -1,8 +1,9 @@
 # Deploying to EC2
 
 Incident runs on one EC2 instance: the same `docker compose` stack as on a laptop, started by a
-first-boot script. Infrastructure is created with the AWS CLI for now; Step 10 replaces these
-commands with AWS CDK.
+first-boot script. The original demo was created with the AWS CLI. `infra/` now
+defines its replacement in AWS CDK; see the migration procedure below before
+running `cdk deploy` against an account with existing demo resources.
 
 ```
 your laptop ══ SSH (port 22, your key) ══▶ EC2 t3.small (Ubuntu 24.04, Docker)
@@ -12,7 +13,7 @@ your laptop ══ SSH (port 22, your key) ══▶ EC2 t3.small (Ubuntu 24.04,
                                                  ▼
                                    CloudWatch Logs /incident/<service> ─▶ metrics (EMF) ─▶ alarms
 security group: only port 22 (SSH), only from your IP. No other port is open.
-IAM role:       read/write the incident-store table, write to the /incident/* log groups; nothing else
+IAM role:       scoped table, queue, evidence, log, metric and Bedrock access (details below)
 ```
 
 ## What each piece is for
@@ -21,8 +22,8 @@ IAM role:       read/write the incident-store table, write to the /incident/* lo
 |---|---|
 | `t3.small` | Free-Plan accounts may only launch Free Tier-eligible types (t3.micro/small, t4g.micro/small, c7i-flex.large, m7i-flex.large). 2 GB RAM fits the stack (~0.5 GB) plus 2 GB swap for builds. |
 | Security group | A firewall around the instance. Only SSH is open, and only from your IP. |
-| SSH tunnel to the dashboard | The dashboard's API has no login yet (Step 10) and can create incidents and break services. A source-IP rule alone isn't enough to protect it: on a shared network (campus Wi-Fi, NAT) many people share one public IP. So the dashboard listens only on the instance's `127.0.0.1`, and you reach it through SSH, which requires your private key. |
-| IAM role + instance profile | Short-lived credentials through the instance metadata service, so no access keys are stored on the server. Used by the backend (read/write `incident-store`) and by Docker's log driver (write to the `/incident/*` log groups). See `deploy/iam/instance-policy.json`. It deliberately can't create tables, log groups or alarms, which is why those are set up from your laptop (step 0). |
+| SSH tunnel to the dashboard | The dashboard binds to `127.0.0.1` and is reached through SSH. The EC2 nginx layer also requires a generated login for the UI, API, and WebSocket. The `/ready` endpoint returns only a readiness status and is exempt from login. |
+| IAM role + instance profile | Short-lived credentials through instance metadata, so no access keys are stored on the server. The backend can use the incident table, update queue, saved evidence, metrics, log queries and one Bedrock model; Docker can write to `/incident/*` log groups. It cannot create tables, buckets, queues or alarms. CDK defines the role for fresh deployments; `deploy/iam/instance-policy.json` is for the original CLI deployment. |
 | Metadata hop limit 2 | IMDSv2 tokens are needed (`HttpTokens=required`). A container is one network hop further away than the host, so with the default hop limit of 1 the backend container couldn't get credentials. |
 | `deploy/user-data.sh` | Runs once at first boot: swap, Docker, `git clone`, `.env`, `docker compose up`, then `verify.sh`. |
 | `deploy/incident.service` | Starts the stack again after the instance is stopped and started. |
@@ -32,6 +33,74 @@ IAM role:       read/write the incident-store table, write to the /incident/* lo
 | `deploy/setup-cloudwatch.sh` | Creates the log groups (14-day retention) and the alarms. Safe to rerun; edit a threshold and rerun to change it. |
 
 ## One-time setup
+
+### CDK deployment on a fresh account/region
+
+The default CDK stack uses the same fixed resource names as the original CLI
+demo. CloudFormation cannot create a second `incident-store`, evidence bucket,
+alarm set, or Lambda alongside those resources. **Do not deploy the default
+stack in the current us-east-2 account until the existing data has been
+exported and the migration is approved.** `cdk synth` and the CI template
+tests are safe and do not change AWS resources. The default stack's table,
+evidence bucket, log groups, and queues have `Retain` removal policies to
+prevent accidental incident-history loss.
+
+An isolated verification stack can coexist with the CLI demo. Pass
+`-c stage=verify -c branch=step-10-final` (or a different Git branch containing
+the stage support) to every CDK command. It names its own table, bucket,
+queues, logs, alarms, Lambda, roles, VPC, and EC2 instance; it also uses a
+separate metric namespace. It does not retain its data resources on deletion.
+Only destroy a stage after checking the account and exact stack name. The
+evidence bucket must be emptied before `cdk destroy` if a scenario wrote
+evidence. In-flight backfill may write more evidence during deletion. If S3
+reports `DELETE_FAILED` because the bucket is not empty, wait for the instance
+and processor to finish deleting, empty that same stage bucket again, and retry
+`cdk destroy`. Its data is disposable; the original demo data is unaffected.
+
+For an empty account/region, using the `incident` AWS profile and an existing
+EC2 key pair, from the repository root:
+
+```bash
+python -m pip install -r requirements-dev.txt -r infra/requirements.txt
+python -m infra.build
+ACCOUNT_ID=$(aws sts get-caller-identity --profile incident --query Account --output text)
+MY_IP=$(curl -s https://checkip.amazonaws.com)
+npx aws-cdk bootstrap aws://$ACCOUNT_ID/us-east-2 --profile incident
+npx aws-cdk synth -c sshCidr=$MY_IP/32 -c keyName=incident-ec2 --profile incident
+npx aws-cdk deploy -c sshCidr=$MY_IP/32 -c keyName=incident-ec2 --profile incident
+```
+
+Use the stack outputs for the instance ID, public IP, SQS update URL, and
+evidence bucket. First boot writes the queue URL and bucket to `.env`, creates
+the dashboard login, and starts Compose. After the stack is deployed, connect
+by SSH and run `sudo /opt/incident/deploy/verify.sh`. CDK's bootstrap staging
+bucket is separate from the private evidence bucket. The CDK stack includes a
+new public VPC subnet without a NAT gateway; the security group admits only
+SSH from `sshCidr`.
+
+For the **existing** CLI deployment, keep using the commands below until a
+reviewed migration plan exports the table and evidence, verifies their hashes,
+retires the old named resources, deploys CDK, and restores the data. The CDK
+template has been tested locally; a destructive fresh deployment in the
+current account is pending authorization.
+
+When upgrading an instance from a revision older than dashboard login, first
+fetch and check out the new branch, run
+`sudo /opt/incident/deploy/setup-dashboard-auth.sh`, then run
+`sudo /opt/incident/deploy/update.sh <branch>`. A running old `update.sh`
+cannot execute lines added to the new revision after its checkout; following
+this order creates the bind-mounted credential file before Compose starts.
+If an old updater has already created `/etc/incident/dashboard.htpasswd` as
+an empty directory, run the new updater again; it removes that directory and
+rebinds the frontend to the generated file.
+
+**Account decision:** keep the AWS Free Plan for this demo. Before inviting
+real users, the account owner should confirm the Paid Plan upgrade, set a
+monthly spend limit and billing alert, and obtain enough Bedrock quota to
+exercise the AI diagnosis. Neither an account upgrade nor a billing change is
+performed by this repository or by `cdk deploy`.
+
+### Original CLI deployment
 
 Run from the repo root in Git Bash (or any bash), logged in with `aws login --profile incident`.
 
@@ -98,7 +167,10 @@ again: a new instance profile takes a moment to become visible to EC2.
 ssh -i ~/.ssh/incident-ec2.pem -N -L 3001:127.0.0.1:3000 ubuntu@$IP
 ```
 
-Leave that running and open **http://localhost:3001**. `-L 3001:127.0.0.1:3000` forwards your
+Leave that running and open **http://localhost:3001**. Get the login on the instance
+with `sudo cat /etc/incident/dashboard-credentials` (username `incident`; the
+password is generated at first boot and retained across updates). Never paste it
+in a PR or log. `-L 3001:127.0.0.1:3000` forwards your
 laptop's port 3001, through the encrypted SSH connection, to port 3000 on the instance itself.
 (3001 rather than 3000 so it doesn't clash with a local `docker compose` stack.) `-N` means
 "just forward, don't open a shell". Stop the tunnel with Ctrl+C.
@@ -115,7 +187,7 @@ IP=$(aws ec2 describe-instances --instance-ids "$INSTANCE_ID" \
 
 ssh -i ~/.ssh/incident-ec2.pem ubuntu@$IP                                 # log in
 ssh -i ~/.ssh/incident-ec2.pem ubuntu@$IP sudo /opt/incident/deploy/update.sh   # deploy main
-ssh -i ~/.ssh/incident-ec2.pem ubuntu@$IP /opt/incident/deploy/verify.sh        # health check
+ssh -i ~/.ssh/incident-ec2.pem ubuntu@$IP sudo /opt/incident/deploy/verify.sh   # health check
 ssh -i ~/.ssh/incident-ec2.pem ubuntu@$IP 'cd /opt/incident && docker compose ps'
 ssh -i ~/.ssh/incident-ec2.pem ubuntu@$IP sudo tail -50 /var/log/cloud-init-output.log  # first-boot log
 

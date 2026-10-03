@@ -4,9 +4,10 @@ Incident detection, diagnosis and response for distributed systems.
 
 Incident watches a set of microservices, detects failures through AWS CloudWatch, groups related alarms into a single incident, works out which service failed first, and uses an LLM (through Amazon Bedrock) to suggest a root cause and remediation. An engineer approves or rejects each suggestion before anything runs.
 
-> Status: early development. See the roadmap below.
+> Status: Stage 1 demo complete in code. AWS account quota and CDK migration remain
+> operational gates before inviting real users.
 
-## Architecture (target)
+## Architecture
 
 ```
 services (Docker on EC2) ──logs/metrics──▶ CloudWatch ──alarm──▶ EventBridge ──▶ Lambda
@@ -30,8 +31,8 @@ services (Docker on EC2) ──logs/metrics──▶ CloudWatch ──alarm─�
 6. [x] Lambda incident pipeline (DynamoDB, S3, SQS)
 7. [x] Dependency graph, correlation, severity
 8. [x] AI diagnosis (Bedrock) + human approval (live model verification awaits account quota)
-9. [ ] Incident detail page + evaluation harness (in progress)
-10. [ ] Infrastructure as code (CDK), hardening, docs
+9. [x] Incident detail page + evaluation harness
+10. [x] Infrastructure as code (CDK), hardening, docs ([fresh deployment verified](docs/STEP10_VERIFICATION.md); migration of the original demo remains)
 
 ## Development
 
@@ -136,3 +137,42 @@ An order exists exactly when payment has captured a charge for its `order_id`. N
 - **Unknown outcomes resolve themselves.** A request that times out may still have been charged (the payment was being written when the caller gave up). `GET /orders/{order_id}` asks payment for the truth and retrieves the original item and quantity after an order-service restart, so such an order appears as `confirmed` once its charge has landed and is a `404` if it never was. The payment schema upgrade adds nullable identity columns to existing tables; charges recorded before this upgrade cannot recover item and quantity that were never stored.
 
 Deploying to AWS: [docs/DEPLOY.md](docs/DEPLOY.md). Full build plan: [docs/PLAN.md](docs/PLAN.md)
+
+## Why the system is designed this way
+
+CloudWatch emits alarm transitions; EventBridge routes them to Lambda. DynamoDB
+conditional writes and an event ID record make repeated or simultaneous events
+converge on one incident. SQS decouples the incident write from dashboard delivery:
+the browser also fetches current state on reconnect, so a missed live message does
+not hide an incident. A separate SQS queue holds failed alarm deliveries and
+exhausted retries for inspection. S3 keeps time bounded logs and metrics separately
+from the incident record. Severity and likely root service come from explicit,
+testable rules over alarm facts. Bedrock's result is labeled as inference, and a
+human must approve any proposed recovery action.
+
+The EC2 security group allows SSH from one IPv4 address. The dashboard and API
+bind to loopback and are accessed through an SSH tunnel. The EC2 dashboard also
+requires a randomly generated login, which protects the proxied API and WebSocket.
+The evidence bucket blocks public access and encrypts objects; queues use SQS
+managed encryption. Runtime credentials come from IAM roles, not access keys in
+source or container environment variables.
+
+## Measured demo and cost
+
+In the four selected live Step 9 scenarios, the rule based probable root service
+was correct in 4/4, median detection was 130.3 seconds, and all alarms recovered.
+This small demonstration does not measure production reliability. Bedrock returned
+`UNAVAILABLE` because of the account's daily token quota, so AI accuracy is
+unscored. The raw rows, including superseded development runs, are in
+[the evaluation report](docs/STEP9_EVALUATION.md).
+
+Watch the [2:32 Stage 1 demo](docs/demo/incident-stage1-demo.mp4). It uses
+captures of the real dashboard and resolved incident INC-1012. The narration
+distinguishes measured behavior from the unavailable AI result.
+
+The t3.small demo costs roughly $0.02/hour while running, plus public IPv4,
+20 GB EBS, CloudWatch custom metrics, alarms, and logs. At the measured traffic
+rate, continuous logging is a significant cost; the 24/7 configuration exceeds
+the project's $20 monthly usage target before credits. Stop EC2 outside demos,
+check AWS Billing regularly, and set a spend limit before inviting users. See
+[deployment and CDK migration](docs/DEPLOY.md) for assumptions and commands.
