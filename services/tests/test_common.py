@@ -143,3 +143,44 @@ def test_call_returns_4xx_to_caller(fake_downstream):
     fake_downstream(lambda request: httpx.Response(404, json={"error": "NotFound"}))
     response = common.http.call("GET", "http://downstream/x", dependency="downstream", timeout=1)
     assert response.status_code == 404
+
+
+def emf_fields(caplog) -> dict:
+    return request_logs(caplog)[-1].fields
+
+
+@pytest.mark.parametrize(
+    ("path", "errors"), [("/ok", 0), ("/nope", 0), ("/fail", 1), ("/crash", 1)]
+)
+def test_request_logs_carry_cloudwatch_metrics(caplog, path, errors):
+    """Each request line is valid Embedded Metric Format: CloudWatch turns it into metrics."""
+    with caplog.at_level(logging.INFO, logger="incident"):
+        client.get(path)
+    fields = emf_fields(caplog)
+    [directive] = fields["_aws"]["CloudWatchMetrics"]
+    assert directive["Namespace"] == "Incident"
+    assert directive["Dimensions"] == [["Service"]]
+    assert isinstance(fields["_aws"]["Timestamp"], int)
+    # Every declared metric and dimension must be a top-level field with a value.
+    for metric in directive["Metrics"]:
+        assert isinstance(fields[metric["Name"]], int | float), metric["Name"]
+    assert fields["Service"] == "test-service"
+    assert fields["Requests"] == 1
+    assert fields["Errors"] == errors  # 5xx only: a 404 is the caller's mistake
+    assert fields["Latency"] == fields["latency_ms"]
+
+
+def test_emf_survives_json_formatting(caplog):
+    with caplog.at_level(logging.INFO, logger="incident"):
+        client.get("/ok")
+    line = json.loads(JsonFormatter("test-service").format(request_logs(caplog)[-1]))
+    assert line["_aws"]["CloudWatchMetrics"][0]["Metrics"][0]["Name"] == "Latency"
+    assert line["Latency"] >= 0
+
+
+def test_chaos_controls_are_logged_but_not_metered(caplog):
+    with caplog.at_level(logging.INFO, logger="incident"):
+        client.get("/chaos")
+    fields = emf_fields(caplog)
+    assert fields["endpoint"] == "/chaos"
+    assert "_aws" not in fields

@@ -1,4 +1,5 @@
 import asyncio
+import json
 
 from incident_api.config import MonitoredService
 from incident_api.health import HealthMonitor
@@ -55,3 +56,18 @@ def test_only_notifies_when_something_changes(fake):
     fake.down.add("payment")
     asyncio.run(monitor.poll_once())
     assert changes[-1] == {"payment": "down", "order": "healthy"}
+
+
+def test_each_poll_reports_health_as_cloudwatch_metrics(fake, capsys):
+    fake.down.add("order")
+    monitor, _ = make_monitor(fake)
+    asyncio.run(monitor.poll_once())
+    lines = [json.loads(line) for line in capsys.readouterr().out.splitlines()]
+    by_service = {line["Service"]: line for line in lines}
+    assert by_service["payment"]["HealthCheckFailed"] == 0
+    assert by_service["order"]["HealthCheckFailed"] == 1
+    assert by_service["order"]["status"] == "down"
+    [directive] = by_service["order"]["_aws"]["CloudWatchMetrics"]
+    assert directive["Namespace"] == "Incident"
+    assert directive["Dimensions"] == [["Service"]]
+    assert directive["Metrics"] == [{"Name": "HealthCheckFailed", "Unit": "Count"}]

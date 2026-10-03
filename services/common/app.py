@@ -10,9 +10,11 @@ from common import chaos
 from common.context import RequestContext, current, reset_current, set_current
 from common.errors import ServiceError
 from common.logs import get_logger, setup_logging
+from common.metrics import request_metrics
 
 TRACE_HEADER = "x-trace-id"
 QUIET_PATHS = {"/health"}  # polled constantly; logging them would drown out real traffic
+UNMETERED_PATHS = {"/chaos"}  # demo controls, not traffic: logged but kept out of metrics
 
 
 def create_app(service: str, *, supports_db_chaos: bool = False, **kwargs) -> FastAPI:
@@ -54,7 +56,7 @@ def create_app(service: str, *, supports_db_chaos: bool = False, **kwargs) -> Fa
                 )
             response.headers[TRACE_HEADER] = ctx.trace_id
             if request.url.path not in QUIET_PATHS:
-                _log_request(log, request, response.status_code, start, ctx)
+                _log_request(log, service, request, response.status_code, start, ctx)
             return response
         finally:
             reset_current(token)
@@ -62,15 +64,20 @@ def create_app(service: str, *, supports_db_chaos: bool = False, **kwargs) -> Fa
     return app
 
 
-def _log_request(log, request: Request, status_code: int, start: float, ctx: RequestContext):
+def _log_request(
+    log, service: str, request: Request, status_code: int, start: float, ctx: RequestContext
+):
     route = request.scope.get("route")
+    latency_ms = round((time.perf_counter() - start) * 1000, 1)
     fields = {
         "method": request.method,
         "endpoint": getattr(route, "path", request.url.path),
         "status_code": status_code,
-        "latency_ms": round((time.perf_counter() - start) * 1000, 1),
+        "latency_ms": latency_ms,
         "error_type": ctx.error_type,
         "error_message": ctx.error_message,
     }
+    if request.url.path not in UNMETERED_PATHS:
+        fields |= request_metrics(service, latency_ms, status_code, int(time.time() * 1000))
     level = "error" if status_code >= 500 else "warning" if status_code >= 400 else "info"
     getattr(log, level)("request", extra={"fields": fields})
