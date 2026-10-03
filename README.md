@@ -26,7 +26,7 @@ services (Docker on EC2) ──logs/metrics──▶ CloudWatch ──alarm─�
 2. [x] Simulated microservices + failure injection (local)
 3. [x] Incident backend + live dashboard
 4. [x] Deploy to EC2
-5. [ ] CloudWatch detection
+5. [x] CloudWatch detection
 6. [ ] Lambda incident pipeline (DynamoDB, S3, SQS)
 7. [ ] Dependency graph, correlation, severity
 8. [ ] AI diagnosis (Bedrock) + human approval

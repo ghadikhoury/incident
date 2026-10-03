@@ -25,10 +25,15 @@ Incident is meant to be a genuine, usable product (startup-style), built on AWS 
 
 **Step 3: done ✅** (PRs #4, #5): Incident backend on DynamoDB (`incident-store`, transactional updates, sparse active index), health monitor, WebSocket, React dashboard.
 
-**Step 4: in review**: EC2 deployment, see [DEPLOY.md](DEPLOY.md).
+**Step 4: done ✅** (PR #6): EC2 deployment, see [DEPLOY.md](DEPLOY.md).
 - [x] Instance `incident` (t3.small, Ubuntu 24.04) running the full stack; only SSH is open (from your IP), the dashboard is reached through an SSH tunnel
 - [x] IAM role `incident-ec2`: DynamoDB `incident-store` only (verified: everything else is denied)
 - [x] Survives stop/start (boot service); **stop it when not in use**
+
+**Step 5: in review** (PRs #7, #8): CloudWatch detection.
+- [x] Services and the backend's health monitor emit metrics in their log lines (EMF): `Latency`, `Requests`, `Errors`, `HealthCheckFailed` per service
+- [x] Logs shipped to `/incident/<service>` on EC2; 12 alarms (latency p90, 5xx rate, health × 4 services)
+- [x] Verified live: `db_slow` → `incident-payment-latency` ALARM after 103 s (then errors, health, and order/gateway as the cascade); all back to OK 216 s after recovery
 
 ---
 
