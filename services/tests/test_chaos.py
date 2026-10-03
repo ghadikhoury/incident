@@ -1,3 +1,4 @@
+import threading
 import time
 
 import pytest
@@ -31,7 +32,14 @@ def reset_chaos():
 
 
 def test_no_chaos_by_default():
-    assert client.get("/chaos").json() == {"latency_ms": 0, "error_rate": 0.0, "db_delay_s": 0.0}
+    assert client.get("/chaos").json() == {
+        "latency_ms": 0,
+        "error_rate": 0.0,
+        "db_delay_s": 0.0,
+        "intermittent_on_s": 0,
+        "intermittent_off_s": 0,
+        "cpu_ms": 0,
+    }
     assert client.get("/work").status_code == 200
 
 
@@ -81,6 +89,55 @@ def test_db_delay_accepted_with_database():
 
 def test_invalid_values_rejected():
     assert client.post("/chaos", json={"error_rate": 1.5}).status_code == 422
+    assert client.post("/chaos", json={"cpu_ms": 5001}).status_code == 422
+
+
+def test_intermittent_fails_in_bursts_and_resets():
+    client.post("/chaos", json={"intermittent_on_s": 120, "intermittent_off_s": 60})
+    assert client.get("/work").status_code == 500
+    chaos._intermittent_started = time.monotonic() - 125
+    assert client.get("/work").status_code == 200
+    chaos._intermittent_started = time.monotonic() - 185
+    assert client.get("/work").status_code == 500
+    client.delete("/chaos")
+    assert client.get("/work").status_code == 200
+
+
+def test_cpu_work_is_bounded_and_clears():
+    client.post("/chaos", json={"cpu_ms": 30})
+    start = time.perf_counter()
+    assert client.get("/work").status_code == 200
+    assert time.perf_counter() - start >= 0.025
+    client.delete("/chaos")
+    assert client.get("/chaos").json()["cpu_ms"] == 0
+
+
+def test_queued_cpu_work_stops_after_reset():
+    start = time.perf_counter()
+    chaos._burn_cpu(5000)
+    assert time.perf_counter() - start < 0.1
+
+
+def test_running_cpu_work_stops_after_reset():
+    chaos.state.cpu_ms = 5000
+    started = threading.Event()
+    stopped = threading.Event()
+
+    def run():
+        started.set()
+        chaos._burn_cpu(5000)
+        stopped.set()
+
+    worker = threading.Thread(target=run)
+    worker.start()
+    try:
+        assert started.wait(1)
+        time.sleep(0.05)
+        chaos.state.cpu_ms = 0
+        assert stopped.wait(1)
+    finally:
+        chaos.state.cpu_ms = 0
+        worker.join(timeout=1)
 
 
 def test_crash_exits_process_after_responding(monkeypatch):

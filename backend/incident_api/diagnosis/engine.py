@@ -144,7 +144,7 @@ class DiagnosisEngine:
                     "window": logs.get("window"),
                     "minute_summary": logs.get("minute_summary", [])[:80],
                     "error_samples": _clean_samples(logs.get("error_samples", [])),
-                    "metric_data": metrics.get("MetricDataResults", [])[:4],
+                    "metric_data": metrics.get("MetricDataResults", [])[:5],
                 }
             )
         root = incident.probable_root or incident.service

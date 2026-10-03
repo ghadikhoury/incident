@@ -5,12 +5,13 @@ named fields into CloudWatch metrics. No separate metrics pipeline or API calls 
 https://docs.aws.amazon.com/AmazonCloudWatch/latest/monitoring/CloudWatch_Embedded_Metric_Format_Specification.html
 """
 
+import time
+
 NAMESPACE = "Incident"
 
 
 def request_metrics(service: str, latency_ms: float, status_code: int, timestamp_ms: int) -> dict:
-    """Fields to add to a request's log line: one data point each for Latency, Requests and
-    Errors (server errors only; a 4xx is the caller's mistake, not an outage)."""
+    """Fields to add to a request's log line as CloudWatch metric observations."""
     return {
         "_aws": {
             "Timestamp": timestamp_ms,
@@ -30,4 +31,22 @@ def request_metrics(service: str, latency_ms: float, status_code: int, timestamp
         "Latency": latency_ms,
         "Requests": 1,
         "Errors": 1 if status_code >= 500 else 0,
+    }
+
+
+def cpu_utilization_line(service: str, percent: float) -> dict:
+    """Actual process CPU time divided by elapsed wall time since the last sample."""
+    return {
+        "_aws": {
+            "Timestamp": int(time.time() * 1000),
+            "CloudWatchMetrics": [
+                {
+                    "Namespace": NAMESPACE,
+                    "Dimensions": [["Service"]],
+                    "Metrics": [{"Name": "CpuUtilizationPct", "Unit": "Percent"}],
+                }
+            ],
+        },
+        "Service": service,
+        "CpuUtilizationPct": round(percent, 1),
     }

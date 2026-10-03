@@ -399,6 +399,7 @@ class AlarmPipeline:
                 ("Errors", "Sum"),
                 ("Latency", "p90"),
                 ("HealthCheckFailed", "Average"),
+                ("CpuUtilizationPct", "Average"),
             )
         ]
         metrics = self.cloudwatch.get_metric_data(

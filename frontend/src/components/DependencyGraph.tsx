@@ -3,6 +3,7 @@ import type { ServiceHealth, ServiceNode } from '../api'
 interface Props {
   nodes: ServiceNode[]
   services: ServiceHealth[]
+  alertedServices?: ReadonlySet<string>
 }
 
 const WIDTH = 850
@@ -10,7 +11,7 @@ const HEIGHT = 280
 const NODE_WIDTH = 138
 const NODE_HEIGHT = 50
 
-export function DependencyGraph({ nodes, services }: Props) {
+export function DependencyGraph({ nodes, services, alertedServices }: Props) {
   if (!nodes.length) return null
 
   const byName = new Map(nodes.map((node) => [node.name, node]))
@@ -47,7 +48,8 @@ export function DependencyGraph({ nodes, services }: Props) {
   return (
     <section className="panel dependency-panel">
       <h2>Service dependencies</h2>
-      <p className="muted">Arrows point to services each component depends on.</p>
+      <p className="muted">Arrows point to services each component depends on.
+        {alertedServices && ' Red nodes have active incident alarms.'}</p>
       <svg viewBox={`0 0 ${WIDTH} ${HEIGHT}`} role="img" aria-label="Service dependency graph">
         <defs>
           <marker id="dependency-arrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto">
@@ -75,12 +77,13 @@ export function DependencyGraph({ nodes, services }: Props) {
         {nodes.map((node) => {
           const at = positions.get(node.name)!
           const status = health.get(node.name) ?? 'unknown'
+          const alarmed = alertedServices?.has(node.name) ?? false
           return (
-            <g key={node.name} className={`dependency-node dependency-node--${status}`}>
+            <g key={node.name} className={`dependency-node dependency-node--${alarmed ? 'alarm' : status}`}>
               <rect x={at.x - NODE_WIDTH / 2} y={at.y - NODE_HEIGHT / 2} width={NODE_WIDTH} height={NODE_HEIGHT} rx="8" />
               <text x={at.x} y={at.y - 2} textAnchor="middle">{node.display_name}</text>
               <text x={at.x} y={at.y + 15} textAnchor="middle" className="dependency-node__status">
-                {node.monitored ? status : 'dependency'}
+                {node.monitored ? alarmed ? 'alarm active' : status : 'dependency'}
               </text>
             </g>
           )

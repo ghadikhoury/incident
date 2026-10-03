@@ -53,5 +53,7 @@ export function describeChaos(chaos: Chaos | null): string | null {
   if (chaos.db_delay_s) parts.push(`DB +${chaos.db_delay_s}s`)
   if (chaos.latency_ms) parts.push(`+${chaos.latency_ms}ms`)
   if (chaos.error_rate) parts.push(`${Math.round(chaos.error_rate * 100)}% errors`)
+  if (chaos.intermittent_on_s) parts.push(`${chaos.intermittent_on_s}s errors / ${chaos.intermittent_off_s}s healthy`)
+  if (chaos.cpu_ms) parts.push(`${chaos.cpu_ms}ms CPU work/request`)
   return parts.length ? parts.join(', ') : null
 }

@@ -178,6 +178,17 @@ def test_emf_survives_json_formatting(caplog):
     assert line["Latency"] >= 0
 
 
+def test_cpu_sample_is_an_emf_metric():
+    from common.metrics import cpu_utilization_line
+
+    line = cpu_utilization_line("payment", 87.35)
+    assert line["Service"] == "payment"
+    assert line["CpuUtilizationPct"] == 87.3
+    assert line["_aws"]["CloudWatchMetrics"][0]["Metrics"] == [
+        {"Name": "CpuUtilizationPct", "Unit": "Percent"}
+    ]
+
+
 def test_chaos_controls_are_logged_but_not_metered(caplog):
     with caplog.at_level(logging.INFO, logger="incident"):
         client.get("/chaos")
