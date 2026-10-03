@@ -6,11 +6,15 @@ from datetime import UTC, datetime
 import pytest
 
 from incident_api.models import Status
-from incident_api.pipeline import AlarmPipeline
+from incident_api.pipeline import SAMPLES_QUERY, SUMMARY_QUERY, AlarmPipeline
 
 
 class Logs:
+    def __init__(self):
+        self.queries = []
+
     def start_query(self, **kwargs):
+        self.queries.append(kwargs)
         return {"queryId": "query-1"}
 
     def get_query_results(self, **kwargs):
@@ -38,7 +42,19 @@ class SQS:
         self.messages = []
 
     def send_message(self, **kwargs):
-        self.messages.append(json.loads(kwargs["MessageBody"]))
+        self.messages.append(
+            {
+                "queue": kwargs["QueueUrl"],
+                "body": json.loads(kwargs["MessageBody"]),
+                "delay": kwargs.get("DelaySeconds", 0),
+            }
+        )
+
+    def updates(self):
+        return [message["body"] for message in self.messages if message["queue"] == "queue"]
+
+    def backfills(self):
+        return [message for message in self.messages if message["queue"] == "backfill"]
 
 
 class EC2:
@@ -73,6 +89,7 @@ def pipeline(store):
         EC2(),
         bucket="evidence",
         queue_url="queue",
+        backfill_queue_url="backfill",
         instance_id="instance",
     )
 
@@ -88,7 +105,11 @@ def test_alarm_creates_evidence_timeline_and_notification(store):
         key.startswith(f"incidents/{incident_id}/events/first/") for key in worker.s3.objects
     )
     assert [entry.kind for entry in store.timeline(incident_id)] == ["alarm", "evidence"]
-    assert worker.sqs.messages == [{"incident_id": incident_id, "event_id": "first"}]
+    assert worker.sqs.updates() == [
+        {"incident_id": incident_id, "event_id": "first"},
+        {"incident_id": incident_id, "event_id": "first"},
+    ]
+    assert worker.sqs.backfills()[0]["delay"] == 360
 
 
 def test_five_nearby_alarms_share_one_incident(store):
@@ -111,6 +132,17 @@ def test_five_nearby_alarms_share_one_incident(store):
     assert len([entry for entry in store.timeline(ids[0]) if entry.kind == "alarm"]) == 5
 
 
+def test_grouping_window_extends_when_new_alarms_arrive(store, monkeypatch):
+    clock = [1000]
+    monkeypatch.setattr("incident_api.pipeline.time.time", lambda: clock[0])
+    worker = pipeline(store)
+    first = worker.process(event("first"))
+    clock[0] += 540
+    assert worker.process(event("second", "order", "errors", second=1)) == first
+    clock[0] += 120  # eleven minutes after first alarm, two after the second
+    assert worker.process(event("third", "gateway", "health", second=2)) == first
+
+
 def test_competing_create_wins_between_read_and_conditional_write(store):
     worker = pipeline(store)
     original = store._transact
@@ -126,6 +158,7 @@ def test_competing_create_wins_between_read_and_conditional_write(store):
     store._transact = interleave
     incident_id = worker.process(event("primary"))
     assert incident_id == competitor_id
+    assert incident_id == "INC-1001"
     assert len(store.list_incidents()) == 1
     assert len([entry for entry in store.timeline(incident_id) if entry.kind == "alarm"]) == 2
 
@@ -157,7 +190,47 @@ def test_sqs_failure_can_retry_without_duplicate_evidence_event(store):
     incident_id = worker.process(event("retry"))
     assert len(store.list_incidents()) == 1
     assert len(store.timeline(incident_id)) == 2
-    assert worker.sqs.messages == [{"incident_id": incident_id, "event_id": "retry"}]
+    assert len(worker.sqs.updates()) == 2
+    assert len(worker.sqs.backfills()) == 1
+
+
+def test_evidence_failure_still_notifies_dashboard(store):
+    worker = pipeline(store)
+
+    def fail(**kwargs):
+        raise RuntimeError("CloudWatch Logs unavailable")
+
+    worker.logs.start_query = fail
+    with pytest.raises(RuntimeError):
+        worker.process(event("logs-down"))
+    assert len(store.list_incidents()) == 1
+    assert worker.sqs.updates() == [{"incident_id": "INC-1001", "event_id": "logs-down"}]
+
+
+def test_evidence_queries_cover_window_and_hide_injection(store):
+    worker = pipeline(store)
+    worker.process(event("query"))
+    assert len(worker.logs.queries) == 2
+    assert {query["queryString"] for query in worker.logs.queries} == {SUMMARY_QUERY, SAMPLES_QUERY}
+    for query in worker.logs.queries:
+        assert query["endTime"] - query["startTime"] == 600
+        assert "message not like /^chaos/" in query["queryString"]
+        assert 'endpoint != "/chaos"' in query["queryString"]
+        assert "simulation" in query["queryString"]
+    assert "sort @timestamp asc" in SAMPLES_QUERY
+    assert "bin(1m)" in SUMMARY_QUERY
+
+
+def test_delayed_backfill_replaces_partial_evidence(store):
+    worker = pipeline(store)
+    alarm = event("backfill")
+    incident_id = worker.process(alarm)
+    key = f"incidents/{incident_id}/events/backfill/logs.json"
+    assert worker.s3.objects[key]["window"]["complete"] is False
+    assert worker.backfill({"incident_id": incident_id, "event": alarm}) == incident_id
+    assert worker.s3.objects[key]["window"]["complete"] is True
+    assert len(store.timeline(incident_id)) == 2
+    assert len(worker.sqs.updates()) == 3
 
 
 def test_ok_is_recorded_without_resolving(store):

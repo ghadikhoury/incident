@@ -23,6 +23,8 @@ REGION = "us-east-2"
 ROLE = "incident-processor"
 FUNCTION = "incident-processor"
 QUEUE = "incident-updates"
+BACKFILL_QUEUE = "incident-evidence-backfill"
+FAILURE_QUEUE = "incident-pipeline-failures"
 
 
 def _policy(statements):
@@ -131,6 +133,25 @@ def main():
     queue_arn = sqs.get_queue_attributes(QueueUrl=queue_url, AttributeNames=["QueueArn"])[
         "Attributes"
     ]["QueueArn"]
+    failure_url = sqs.create_queue(
+        QueueName=FAILURE_QUEUE,
+        Attributes={"MessageRetentionPeriod": "1209600", "SqsManagedSseEnabled": "true"},
+    )["QueueUrl"]
+    failure_arn = sqs.get_queue_attributes(QueueUrl=failure_url, AttributeNames=["QueueArn"])[
+        "Attributes"
+    ]["QueueArn"]
+    backfill_url = sqs.create_queue(
+        QueueName=BACKFILL_QUEUE,
+        Attributes={
+            "VisibilityTimeout": "270",  # six times the Lambda's 45-second timeout
+            "MessageRetentionPeriod": "345600",
+            "SqsManagedSseEnabled": "true",
+            "RedrivePolicy": json.dumps({"deadLetterTargetArn": failure_arn, "maxReceiveCount": 5}),
+        },
+    )["QueueUrl"]
+    backfill_arn = sqs.get_queue_attributes(QueueUrl=backfill_url, AttributeNames=["QueueArn"])[
+        "Attributes"
+    ]["QueueArn"]
     trust_doc = {
         "Version": "2012-10-17",
         "Statement": [
@@ -167,10 +188,18 @@ def main():
                 table_arn,
             ),
             _statement("EvidenceObjects", "s3:PutObject", f"arn:aws:s3:::{bucket}/incidents/*"),
-            _statement("Updates", "sqs:SendMessage", queue_arn),
+            _statement(
+                "SendUpdatesAndBackfill", "sqs:SendMessage", [queue_arn, backfill_arn, failure_arn]
+            ),
+            _statement(
+                "ReadBackfill",
+                ["sqs:ReceiveMessage", "sqs:DeleteMessage", "sqs:GetQueueAttributes"],
+                backfill_arn,
+            ),
             _statement(
                 "QueryIncidentLogs", ["logs:StartQuery", "logs:GetQueryResults"], log_groups
             ),
+            # These CloudWatch read APIs require a wildcard resource.
             _statement(
                 "ReadAlarmAndMetrics",
                 ["cloudwatch:DescribeAlarms", "cloudwatch:GetMetricData"],
@@ -202,6 +231,7 @@ def main():
         "Variables": {
             "INCIDENT_EVIDENCE_BUCKET": bucket,
             "INCIDENT_QUEUE_URL": queue_url,
+            "INCIDENT_BACKFILL_QUEUE_URL": backfill_url,
             "INCIDENT_INSTANCE_ID": args.instance_id,
         }
     }
@@ -216,7 +246,7 @@ def main():
                     Role=role_arn,
                     Handler="incident_api.pipeline.lambda_handler",
                     Code={"ZipFile": package},
-                    Timeout=30,
+                    Timeout=45,
                     MemorySize=256,
                     Environment=environment,
                     Architectures=["x86_64"],
@@ -237,12 +267,24 @@ def main():
             Runtime="python3.12",
             Role=role_arn,
             Handler="incident_api.pipeline.lambda_handler",
-            Timeout=30,
+            Timeout=45,
             MemorySize=256,
             Environment=environment,
         )
     lam.get_waiter("function_active").wait(FunctionName=FUNCTION)
     lam.get_waiter("function_updated").wait(FunctionName=FUNCTION)
+    lam.put_function_event_invoke_config(
+        FunctionName=FUNCTION,
+        MaximumRetryAttempts=2,
+        DestinationConfig={"OnFailure": {"Destination": failure_arn}},
+    )
+    mappings = lam.list_event_source_mappings(FunctionName=FUNCTION, EventSourceArn=backfill_arn)[
+        "EventSourceMappings"
+    ]
+    if not mappings:
+        lam.create_event_source_mapping(
+            EventSourceArn=backfill_arn, FunctionName=FUNCTION, BatchSize=1, Enabled=True
+        )
     alarm_names = [
         f"incident-{service}-{signal}"
         for service in ("gateway", "order", "payment", "inventory")
@@ -262,6 +304,23 @@ def main():
             }
         ),
     )["RuleArn"]
+    sqs.set_queue_attributes(
+        QueueUrl=failure_url,
+        Attributes={
+            "Policy": _policy(
+                [
+                    {
+                        "Sid": "EventBridgeFailedAlarmDelivery",
+                        "Effect": "Allow",
+                        "Principal": {"Service": "events.amazonaws.com"},
+                        "Action": "sqs:SendMessage",
+                        "Resource": failure_arn,
+                        "Condition": {"ArnEquals": {"aws:SourceArn": rule_arn}},
+                    }
+                ]
+            )
+        },
+    )
     try:
         lam.add_permission(
             FunctionName=FUNCTION,
@@ -278,12 +337,17 @@ def main():
             {
                 "Id": "incident-processor",
                 "Arn": f"arn:aws:lambda:{REGION}:{account}:function:{FUNCTION}",
+                "DeadLetterConfig": {"Arn": failure_arn},
             }
         ],
     )
     if targets["FailedEntryCount"]:
         raise RuntimeError(f"EventBridge target failed: {targets['FailedEntries']}")
-    print(f"Evidence bucket: {bucket}\nSQS URL: {queue_url}\nLambda: {FUNCTION}\nRule: {rule_arn}")
+    print(
+        f"Evidence bucket: {bucket}\nSQS updates: {queue_url}\n"
+        f"SQS backfill: {backfill_url}\nSQS failures: {failure_url}\n"
+        f"Lambda: {FUNCTION}\nRule: {rule_arn}"
+    )
     print("Add INCIDENT_QUEUE_URL to the EC2 .env and redeploy the backend branch.")
 
 

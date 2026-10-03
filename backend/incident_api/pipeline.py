@@ -10,13 +10,32 @@ import boto3
 from botocore.exceptions import ClientError
 
 from incident_api import config
-from incident_api.models import Incident, Severity, Status
-from incident_api.store import IncidentStore, _pk, _unique_now, now_iso
+from incident_api.models import IncidentCreate, Status
+from incident_api.store import IncidentStore
 
 LOG = logging.getLogger(__name__)
 WINDOW_SECONDS = 600
+BACKFILL_DELAY_SECONDS = 360
 SERVICES = {service.name for service in config.SERVICES}
 SIGNALS = {"health", "errors", "latency"}
+EXCLUDE_INJECTION = (
+    "filter (not ispresent(message) or message not like /^chaos/) "
+    'and (not ispresent(endpoint) or endpoint != "/chaos") '
+    "and @message not like /\\/api\\/simulation\\/(failure|recover)/"
+)
+SUMMARY_QUERY = (
+    "fields service, endpoint, status_code, error_type, message | "
+    + EXCLUDE_INJECTION
+    + " | stats count(*) as events by bin(1m) as minute, service, endpoint, "
+    "status_code, error_type | sort minute asc"
+)
+SAMPLES_QUERY = (
+    "fields @timestamp, service, level, endpoint, status_code, error_type, "
+    "error_message, message, trace_id | "
+    + EXCLUDE_INJECTION
+    + ' | filter level in ["ERROR", "WARNING"] or status_code >= 500 or ispresent(error_type) '
+    "| sort @timestamp asc | limit 200"
+)
 
 
 class IgnoredAlarm(Exception):
@@ -62,6 +81,7 @@ class AlarmPipeline:
         *,
         bucket: str,
         queue_url: str,
+        backfill_queue_url: str,
         instance_id: str,
     ):
         self.store = store
@@ -72,6 +92,7 @@ class AlarmPipeline:
         self.ec2 = ec2
         self.bucket = bucket
         self.queue_url = queue_url
+        self.backfill_queue_url = backfill_queue_url
         self.instance_id = instance_id
 
     @classmethod
@@ -87,6 +108,7 @@ class AlarmPipeline:
             session.client("ec2"),
             bucket=os.environ["INCIDENT_EVIDENCE_BUCKET"],
             queue_url=os.environ["INCIDENT_QUEUE_URL"],
+            backfill_queue_url=os.environ["INCIDENT_BACKFILL_QUEUE_URL"],
             instance_id=os.environ["INCIDENT_INSTANCE_ID"],
         )
 
@@ -99,20 +121,41 @@ class AlarmPipeline:
             if not name.endswith("-health"):
                 return None  # request metrics legitimately stop with no traffic
         event_id = event["id"]
-        marker_key = {"pk": f"ALARM_EVENT#{event_id}", "sk": "META"}
-        marker = self.store.table.get_item(Key=marker_key, ConsistentRead=True).get("Item")
+        marker = self.store.alarm_marker(event_id)
         if marker:
             incident_id = marker.get("incident_id")
         else:
             incident_id = self._record(event_id, name, service, state, when)
         if incident_id is None:
             return None
-        if state == "ALARM" or state == "INSUFFICIENT_DATA":
-            self._capture(incident_id, event_id, name, service, when, event)
+        self._notify(incident_id, event_id)
+        if state in {"ALARM", "INSUFFICIENT_DATA"}:
+            self._capture(incident_id, event_id, name, service, when, event, complete=False)
+            self._notify(incident_id, event_id)
+            self.sqs.send_message(
+                QueueUrl=self.backfill_queue_url,
+                DelaySeconds=BACKFILL_DELAY_SECONDS,
+                MessageBody=json.dumps({"incident_id": incident_id, "event": event}),
+            )
+        return incident_id
+
+    def _notify(self, incident_id: str, event_id: str) -> None:
         self.sqs.send_message(
             QueueUrl=self.queue_url,
             MessageBody=json.dumps({"incident_id": incident_id, "event_id": event_id}),
         )
+
+    def backfill(self, body: dict) -> str:
+        event = body["event"]
+        name, service, state, when = _transition(event)
+        if state not in {"ALARM", "INSUFFICIENT_DATA"}:
+            raise ValueError("backfill is only valid for evidence-bearing transitions")
+        marker = self.store.alarm_marker(event["id"])
+        if not marker or marker.get("incident_id") != body["incident_id"]:
+            raise ValueError("backfill has no matching recorded alarm event")
+        incident_id = body["incident_id"]
+        self._capture(incident_id, event["id"], name, service, when, event, complete=True)
+        self._notify(incident_id, event["id"])
         return incident_id
 
     def _instance_running(self) -> bool:
@@ -130,9 +173,7 @@ class AlarmPipeline:
         ts = when.isoformat(timespec="milliseconds")
         is_problem = state != "OK"
         for attempt in range(8):
-            marker = table.get_item(
-                Key={"pk": f"ALARM_EVENT#{event_id}", "sk": "META"}, ConsistentRead=True
-            ).get("Item")
+            marker = self.store.alarm_marker(event_id)
             if marker:
                 return marker.get("incident_id")
             alarm = table.get_item(
@@ -154,10 +195,25 @@ class AlarmPipeline:
                     else None
                 )
                 create = active is None or active.status == Status.RESOLVED
-                incident_id = self.store._next_id() if create else active.incident_id
+                if create:
+                    title = (
+                        f"{service} {name.rsplit('-', 1)[-1]} alarm"
+                        if state == "ALARM"
+                        else f"Monitoring degraded: {service}"
+                    )
+                    incident, create_actions = self.store.automatic_incident_actions(
+                        IncidentCreate(
+                            title=title,
+                            service=service,
+                            trigger="CLOUDWATCH",
+                            summary=f"{name} entered {state}",
+                        )
+                    )
+                    incident_id = incident.incident_id
+                else:
+                    incident_id = active.incident_id
             marker_item = {
-                "pk": f"ALARM_EVENT#{event_id}",
-                "sk": "META",
+                **self.store.alarm_marker_key(event_id),
                 "incident_id": incident_id,
             }
             transaction = [
@@ -171,38 +227,7 @@ class AlarmPipeline:
             ]
             if is_problem:
                 if create:
-                    incident = Incident(
-                        incident_id=incident_id,
-                        title=f"{service} {name.rsplit('-', 1)[-1]} alarm"
-                        if state == "ALARM"
-                        else f"Monitoring degraded: {service}",
-                        service=service,
-                        severity=Severity.SEV3,
-                        status=Status.OPEN,
-                        trigger="CLOUDWATCH",
-                        summary=f"{name} entered {state}",
-                        created_at=now_iso(),
-                        updated_at=now_iso(),
-                    )
-                    item = {
-                        k: v for k, v in incident.model_dump(mode="json").items() if v is not None
-                    }
-                    item |= {
-                        "pk": _pk(incident_id),
-                        "sk": "META",
-                        "gsi1pk": "INCIDENT",
-                        "gsi1sk": f"{incident.created_at}#{incident_id}",
-                        "active_pk": "ACTIVE",
-                    }
-                    transaction.append(
-                        {
-                            "Put": {
-                                "TableName": table.name,
-                                "Item": item,
-                                "ConditionExpression": "attribute_not_exists(pk)",
-                            }
-                        }
-                    )
+                    transaction.extend(create_actions)
                     lock_condition = "attribute_not_exists(pk) OR expires_at <= :now"
                     lock_values = {":now": now}
                     if lock:
@@ -226,11 +251,16 @@ class AlarmPipeline:
                 else:
                     transaction.append(
                         {
-                            "ConditionCheck": {
+                            "Update": {
                                 "TableName": table.name,
                                 "Key": {"pk": "PIPELINE", "sk": "ACTIVE"},
+                                "UpdateExpression": "SET expires_at = :next",
                                 "ConditionExpression": "incident_id = :id AND expires_at > :now",
-                                "ExpressionAttributeValues": {":id": incident_id, ":now": now},
+                                "ExpressionAttributeValues": {
+                                    ":id": incident_id,
+                                    ":now": now,
+                                    ":next": now + WINDOW_SECONDS,
+                                },
                             }
                         }
                     )
@@ -238,7 +268,7 @@ class AlarmPipeline:
                         {
                             "ConditionCheck": {
                                 "TableName": table.name,
-                                "Key": {"pk": _pk(incident_id), "sk": "META"},
+                                "Key": self.store.incident_key(incident_id),
                                 "ConditionExpression": "#status <> :resolved",
                                 "ExpressionAttributeNames": {"#status": "status"},
                                 "ExpressionAttributeValues": {":resolved": Status.RESOLVED.value},
@@ -266,11 +296,11 @@ class AlarmPipeline:
             if incident_id:
                 message = f"{name} entered {state} at {ts}"
                 transaction.extend(
-                    self.store._event_puts(incident_id, [("alarm", message)], "cloudwatch")
+                    self.store.event_puts(incident_id, [("alarm", message)], "cloudwatch")
                 )
-            marker_item["evidence_at"] = _unique_now().isoformat(timespec="microseconds")
+            marker_item["evidence_at"] = self.store.event_time()
             try:
-                self.store._transact(transaction)
+                self.store.transact(transaction)
                 return incident_id
             except ClientError as exc:
                 if exc.response["Error"]["Code"] != "TransactionCanceledException":
@@ -281,27 +311,29 @@ class AlarmPipeline:
         return None
 
     def _capture(
-        self, incident_id: str, event_id: str, name: str, service: str, when: datetime, event: dict
+        self,
+        incident_id: str,
+        event_id: str,
+        name: str,
+        service: str,
+        when: datetime,
+        event: dict,
+        *,
+        complete: bool,
     ) -> None:
         prefix = f"incidents/{incident_id}/events/{event_id}"
-        start, end = when - timedelta(minutes=5), when + timedelta(minutes=5)
+        start, requested_end = when - timedelta(minutes=5), when + timedelta(minutes=5)
+        end = requested_end if complete else min(requested_end, datetime.now(UTC))
         groups = [f"/incident/{service}", "/incident/backend"]
-        query = "fields @timestamp, @log, @message | sort @timestamp desc | limit 200"
-        result = self.logs.start_query(
-            logGroupNames=groups,
-            startTime=int(start.timestamp()),
-            endTime=int(end.timestamp()),
-            queryString=query,
-        )
-        query_id = result["queryId"]
-        logs = None
-        for _ in range(24):
-            logs = self.logs.get_query_results(queryId=query_id)
-            if logs["status"] not in {"Running", "Scheduled"}:
-                break
-            time.sleep(0.5)
-        if logs is None or logs["status"] not in {"Complete", "PartialSuccess"}:
-            raise RuntimeError(f"Logs Insights query {query_id} did not complete: {logs}")
+        summary = self._query_logs(groups, start, end, SUMMARY_QUERY)
+        samples = self._query_logs(groups, start, end, SAMPLES_QUERY)
+        window = {
+            "start": start.isoformat(),
+            "end": requested_end.isoformat(),
+            "captured_through": end.isoformat(),
+            "complete": complete,
+        }
+        logs = {"window": window, "minute_summary": summary, "error_samples": samples}
         metric_queries = [
             {
                 "Id": metric.lower(),
@@ -328,12 +360,12 @@ class AlarmPipeline:
             EndTime=end,
             ScanBy="TimestampAscending",
         )
-        alarm = self.cloudwatch.describe_alarms(AlarmNames=[name])["MetricAlarms"]
-        for filename, payload in (
-            ("event.json", {"event": event, "alarm": alarm}),
-            ("logs.json", logs),
-            ("metrics.json", metrics),
-        ):
+        metrics["window"] = window
+        objects = [("logs.json", logs), ("metrics.json", metrics)]
+        if not complete:
+            alarm = self.cloudwatch.describe_alarms(AlarmNames=[name])["MetricAlarms"]
+            objects.append(("event.json", {"event": event, "alarm": alarm}))
+        for filename, payload in objects:
             self.s3.put_object(
                 Bucket=self.bucket,
                 Key=f"{prefix}/{filename}",
@@ -341,29 +373,48 @@ class AlarmPipeline:
                 ContentType="application/json",
                 ServerSideEncryption="AES256",
             )
-        # A deterministic key makes repeated Lambda delivery safe after an S3 or SQS error.
-        marker = self.store.table.get_item(
-            Key={"pk": f"ALARM_EVENT#{event_id}", "sk": "META"}, ConsistentRead=True
-        )["Item"]
-        try:
-            self.store.table.put_item(
-                Item={
-                    "pk": _pk(incident_id),
-                    "sk": f"EVENT#{marker['evidence_at']}#EVIDENCE#{event_id}",
-                    "at": marker["evidence_at"],
-                    "kind": "evidence",
-                    "message": f"Evidence: s3://{self.bucket}/{prefix}/",
-                },
-                ConditionExpression="attribute_not_exists(pk)",
+        marker = self.store.alarm_marker(event_id)
+        if not marker:
+            raise RuntimeError(f"missing alarm marker for {event_id}")
+        if not complete:
+            self.store.record_evidence(
+                incident_id, event_id, marker["evidence_at"], self.bucket, prefix
             )
-        except ClientError as exc:
-            if exc.response["Error"]["Code"] != "ConditionalCheckFailedException":
-                raise
+
+    def _query_logs(
+        self, groups: list[str], start: datetime, end: datetime, query: str
+    ) -> list[dict]:
+        result = self.logs.start_query(
+            logGroupNames=groups,
+            startTime=int(start.timestamp()),
+            endTime=int(end.timestamp()),
+            queryString=query,
+        )
+        query_id = result["queryId"]
+        logs = None
+        for _ in range(16):
+            logs = self.logs.get_query_results(queryId=query_id)
+            if logs["status"] not in {"Running", "Scheduled"}:
+                break
+            time.sleep(0.5)
+        if logs is None or logs["status"] not in {"Complete", "PartialSuccess"}:
+            raise RuntimeError(f"Logs Insights query {query_id} did not complete: {logs}")
+        return [
+            {field["field"]: field["value"] for field in row if field["field"] != "@ptr"}
+            for row in logs["results"]
+        ]
 
 
 def lambda_handler(event: dict, context):
+    pipeline = AlarmPipeline.from_environment()
+    if "Records" in event:
+        for record in event["Records"]:
+            if record.get("eventSource") != "aws:sqs":
+                raise ValueError("unexpected Lambda record source")
+            pipeline.backfill(json.loads(record["body"]))
+        return {"backfilled": len(event["Records"])}
     try:
-        incident_id = AlarmPipeline.from_environment().process(event)
+        incident_id = pipeline.process(event)
     except IgnoredAlarm:
         LOG.info("Ignoring unrelated alarm event", exc_info=True)
         return {"ignored": True}

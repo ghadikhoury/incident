@@ -195,15 +195,18 @@ AWS_PROFILE=incident python deploy/setup_pipeline.py --instance-id i-08d5fddbdc3
 
 The script packages Linux Lambda dependencies, creates the private evidence bucket
 `incident-evidence-<account>` (30-day evidence retention), SQS queue `incident-updates`,
-Lambda role and function, and the EventBridge alarm-state rule. It updates the EC2 role
-to receive queue messages. Rerunning it updates the Lambda code and configuration.
+an evidence-backfill queue and a 14-day failure queue, Lambda role and function, and
+the EventBridge alarm-state rule. EventBridge delivery failures, exhausted Lambda
+asynchronous retries, and failed backfill messages go to the failure queue for inspection.
+It updates the EC2 role to receive queue messages. Rerunning it updates the Lambda code
+and configuration.
 Use the instance ID for the current demo instance if it changes.
 
 Set `INCIDENT_QUEUE_URL` to the printed SQS URL in the instance's `/opt/incident/.env`,
 then deploy the Step 6 branch with `sudo /opt/incident/deploy/update.sh <branch>` or
 `main` after merge. A local Compose deployment can set the same variable in its `.env`.
 The backend uses long polling and broadcasts each updated incident over `/api/ws`.
-The Lambda creates one incident for alarms processed within a ten-minute window;
+The Lambda creates one incident for alarms processed within a sliding ten-minute window;
 Step 7 replaces that coarse grouping with dependency-aware correlation. EventBridge
 delivery can be repeated, so event IDs are stored in DynamoDB and retries reuse the
 same incident and evidence timeline entry. Resolving an incident lets the next alarm
@@ -215,15 +218,22 @@ To verify, inject `db_slow` on the dashboard, wait for the payment CloudWatch al
 enter `ALARM`, and check that a new incident appears without refreshing the page. Open
 its timeline via `/api/incidents/<id>` and find the evidence path. The bucket contains
 `event.json`, `logs.json`, and `metrics.json` under
-`incidents/<id>/events/<eventbridge-id>/`. Evidence is a snapshot taken when Lambda
-processes the alarm, so the future half of the requested five-minute window may not
-have arrived yet. Logs Insights queries are capped at 200 results per event.
+`incidents/<id>/events/<eventbridge-id>/`. The first snapshot is captured immediately
+and marked `complete: false` because the five minutes after the alarm have not yet
+elapsed. A delayed backfill replaces `logs.json` and `metrics.json` with the full
+five minutes before and after the alarm and marks them `complete: true`. The log
+evidence has per-minute counts across the full window and up to 200 early warning/error
+samples; it excludes the simulation control endpoint and injection messages so they
+do not reveal the diagnosis. The incident is broadcast as soon as its record exists,
+even if evidence capture later fails; evidence and backfill each trigger another update.
 
 The Lambda's log group is `/aws/lambda/incident-processor` (14-day retention). If an
 alarm transitions but no incident appears, inspect that group, the EventBridge target,
-and the SQS queue. The queue retains messages for four days and redelivers when a
-backend broadcast fails; the initial incident API fetch covers updates missed while a
-browser was disconnected. Logs Insights scans and S3 storage add usage-based charges.
+and `incident-pipeline-failures`. The update queue retains messages for four days and
+redelivers when a backend broadcast fails; the initial incident API fetch covers updates
+missed while a browser was disconnected. Inspect the failure queue before replaying a
+failed alarm or backfill: alarm events are idempotent in DynamoDB, and backfills replace
+the same S3 objects. Logs Insights scans and S3 storage add usage-based charges.
 
 **Cost and the $20 usage budget.** At list rates, 16 custom metrics are about $4.80/month.
 The eight latency/health alarms each evaluate one metric, while the four error-rate alarms

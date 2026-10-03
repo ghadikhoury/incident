@@ -30,6 +30,23 @@ def test_create_records_timeline_event(store):
     assert "Payment latency spike" in event.message
 
 
+def test_failed_create_does_not_consume_incident_number(store, monkeypatch):
+    real_transact = store.client.transact_write_items
+    failed = False
+
+    def flaky_transact(**kwargs):
+        nonlocal failed
+        if not failed:
+            failed = True
+            raise ClientError({"Error": {"Code": "InternalServerError"}}, "TransactWriteItems")
+        return real_transact(**kwargs)
+
+    monkeypatch.setattr(store.client, "transact_write_items", flaky_transact)
+    with pytest.raises(ClientError):
+        new(store)
+    assert new(store).incident_id == "INC-1001"
+
+
 def test_get_missing_returns_none(store):
     assert store.get("INC-9999") is None
 
