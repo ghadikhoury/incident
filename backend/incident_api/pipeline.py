@@ -53,7 +53,7 @@ def _transition(event: dict) -> tuple[str, str, str, datetime]:
     detail = event["detail"]
     name = detail["alarmName"]
     prefix = config.ALARM_PREFIX + "-"
-    parts = name[len(prefix):].split("-") if name.startswith(prefix) else []
+    parts = name[len(prefix) :].split("-") if name.startswith(prefix) else []
     if len(parts) != 2 or parts[0] not in SERVICES or parts[1] not in SIGNALS:
         raise IgnoredAlarm(f"unmanaged alarm: {name}")
     state = detail["state"]["value"]
