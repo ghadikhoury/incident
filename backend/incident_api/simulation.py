@@ -15,7 +15,7 @@ FAILURES: dict[str, dict] = {
     "latency": {"latency_ms": 3000},
     "error_rate": {"error_rate": 0.4},
     "crash": {"crash": True},
-    "intermittent": {"intermittent_every": 2},
+    "intermittent": {"intermittent_on_s": 120, "intermittent_off_s": 60},
     "cpu": {"cpu_ms": 2300},
 }
 DB_ONLY_FAILURES = {"db_slow"}

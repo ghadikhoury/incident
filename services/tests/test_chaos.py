@@ -35,7 +35,8 @@ def test_no_chaos_by_default():
         "latency_ms": 0,
         "error_rate": 0.0,
         "db_delay_s": 0.0,
-        "intermittent_every": 0,
+        "intermittent_on_s": 0,
+        "intermittent_off_s": 0,
         "cpu_ms": 0,
     }
     assert client.get("/work").status_code == 200
@@ -90,9 +91,13 @@ def test_invalid_values_rejected():
     assert client.post("/chaos", json={"cpu_ms": 5001}).status_code == 422
 
 
-def test_intermittent_fails_every_second_request_and_resets():
-    client.post("/chaos", json={"intermittent_every": 2})
-    assert [client.get("/work").status_code for _ in range(4)] == [200, 500, 200, 500]
+def test_intermittent_fails_in_bursts_and_resets():
+    client.post("/chaos", json={"intermittent_on_s": 120, "intermittent_off_s": 60})
+    assert client.get("/work").status_code == 500
+    chaos._intermittent_started = time.monotonic() - 125
+    assert client.get("/work").status_code == 200
+    chaos._intermittent_started = time.monotonic() - 185
+    assert client.get("/work").status_code == 500
     client.delete("/chaos")
     assert client.get("/work").status_code == 200
 

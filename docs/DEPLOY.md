@@ -319,8 +319,11 @@ The search is limited to 200 lines, excludes injection-control lines, and runs o
 when requested. The page also shows related alerts, the dependency graph, AI analysis,
 the full timeline, and acknowledge, owner, severity, and resolve controls.
 
-The demo now supports `intermittent` (every second request fails) and `cpu` (2.3 seconds
-of bounded CPU work per request), as well as the earlier `crash` scenario. Each service
+The demo now supports `intermittent` (all requests fail for two minutes, then recover
+for one minute, repeating) and `cpu` (2.3 seconds of bounded CPU work per request),
+as well as the earlier `crash` scenario. The CPU work runs in a worker thread; Python's
+GIL still competes with the event loop, so latency can rise. There is no CPU alarm;
+the existing latency alarm detects this case. Each service
 also emits measured process CPU utilization every 10 seconds, so a CPU diagnosis can
 cite a real signal rather than injection settings. A crashed
 service cannot answer `/chaos`; restart its container with `sudo docker compose start

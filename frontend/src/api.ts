@@ -85,7 +85,8 @@ export interface Chaos {
   latency_ms: number
   error_rate: number
   db_delay_s: number
-  intermittent_every: number
+  intermittent_on_s: number
+  intermittent_off_s: number
   cpu_ms: number
 }
 

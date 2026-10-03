@@ -15,6 +15,7 @@ venv/
 .coverage
 htmlcov/
 *.egg-info/
+scenarios/results/
 
 # Node / frontend
 node_modules/
