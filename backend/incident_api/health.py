@@ -10,6 +10,7 @@ import httpx
 from pydantic import BaseModel
 
 from incident_api.config import MonitoredService
+from incident_api.metrics import emit_health_checks
 from incident_api.store import now_iso
 
 log = logging.getLogger(__name__)
@@ -60,6 +61,7 @@ class HealthMonitor:
 
     async def poll_once(self) -> None:
         results = await asyncio.gather(*(self._check(s) for s in self.services))
+        emit_health_checks(results)
         changed = any(not r.same_state_as(self.snapshot.get(r.name)) for r in results)
         self.snapshot = {r.name: r for r in results}
         if changed:
