@@ -8,8 +8,11 @@ commands with AWS CDK.
 your laptop ══ SSH (port 22, your key) ══▶ EC2 t3.small (Ubuntu 24.04, Docker)
   browser → localhost:3001 ─┘ tunnel        ├─ frontend (nginx, 127.0.0.1:3000) ─▶ backend ─▶ DynamoDB incident-store
                                             └─ gateway, order, payment, inventory, postgres, loadgen
+                                                 │ every container's logs (awslogs driver)
+                                                 ▼
+                                   CloudWatch Logs /incident/<service> ─▶ metrics (EMF) ─▶ alarms
 security group: only port 22 (SSH), only from your IP. No other port is open.
-IAM role:       the instance may read/write the incident-store table, nothing else
+IAM role:       read/write the incident-store table, write to the /incident/* log groups; nothing else
 ```
 
 ## What each piece is for
@@ -19,12 +22,14 @@ IAM role:       the instance may read/write the incident-store table, nothing el
 | `t3.small` | Free-Plan accounts may only launch Free Tier-eligible types (t3.micro/small, t4g.micro/small, c7i-flex.large, m7i-flex.large). 2 GB RAM fits the stack (~0.5 GB) plus 2 GB swap for builds. |
 | Security group | A firewall around the instance. Only SSH is open, and only from your IP. |
 | SSH tunnel to the dashboard | The dashboard's API has no login yet (Step 10) and can create incidents and break services. A source-IP rule alone isn't enough to protect it: on a shared network (campus Wi-Fi, NAT) many people share one public IP. So the dashboard listens only on the instance's `127.0.0.1`, and you reach it through SSH, which requires your private key. |
-| IAM role + instance profile | Gives the backend short-lived credentials for DynamoDB through the instance metadata service, so no access keys are stored on the server. Limited to reading and writing `incident-store` (see `deploy/iam/backend-policy.json`). It deliberately can't create or change tables, which is why the table is set up from your laptop (step 0). |
+| IAM role + instance profile | Short-lived credentials through the instance metadata service, so no access keys are stored on the server. Used by the backend (read/write `incident-store`) and by Docker's log driver (write to the `/incident/*` log groups). See `deploy/iam/instance-policy.json`. It deliberately can't create tables, log groups or alarms, which is why those are set up from your laptop (step 0). |
 | Metadata hop limit 2 | IMDSv2 tokens are needed (`HttpTokens=required`). A container is one network hop further away than the host, so with the default hop limit of 1 the backend container couldn't get credentials. |
 | `deploy/user-data.sh` | Runs once at first boot: swap, Docker, `git clone`, `.env`, `docker compose up`, then `verify.sh`. |
 | `deploy/incident.service` | Starts the stack again after the instance is stopped and started. |
 | `deploy/update.sh` | Deploys new code: `git pull`, rebuild what changed, then `verify.sh`. |
 | `deploy/verify.sh` | Checks the deployment end to end through nginx, including a real DynamoDB read. The containers' health checks alone would pass even if the table were missing. |
+| `docker-compose.ec2.yml` | EC2-only layer (selected by `COMPOSE_FILE` in the instance's `.env`): sends each container's logs to CloudWatch Logs with Docker's `awslogs` driver. |
+| `deploy/setup-cloudwatch.sh` | Creates the log groups (14-day retention) and the alarms. Safe to rerun; edit a threshold and rerun to change it. |
 
 ## One-time setup
 
@@ -37,16 +42,18 @@ export AWS_PROFILE=incident AWS_REGION=us-east-2 MSYS_NO_PATHCONV=1
 ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
 MY_IP=$(curl -s https://checkip.amazonaws.com)
 
-# 0. The DynamoDB table and its indexes (safe to rerun; also upgrades an existing table).
-#    Uses your local profile: the instance's role is deliberately not allowed to do this.
+# 0. The DynamoDB table and its indexes, then CloudWatch log groups and alarms.
+#    Both are safe to rerun, and both use your local profile: the instance's role is
+#    deliberately not allowed to create these.
 (cd backend && INCIDENT_AWS_PROFILE=incident python -m incident_api.setup_table)
+deploy/setup-cloudwatch.sh
 
 # 1. IAM role the instance runs as
 aws iam create-role --role-name incident-ec2 \
   --assume-role-policy-document file://deploy/iam/ec2-trust-policy.json
-sed "s/ACCOUNT_ID/$ACCOUNT_ID/" deploy/iam/backend-policy.json > backend-policy.tmp.json
-aws iam put-role-policy --role-name incident-ec2 --policy-name incident-backend \
-  --policy-document file://backend-policy.tmp.json && rm backend-policy.tmp.json
+sed "s/ACCOUNT_ID/$ACCOUNT_ID/" deploy/iam/instance-policy.json > instance-policy.tmp.json
+aws iam put-role-policy --role-name incident-ec2 --policy-name incident-instance \
+  --policy-document file://instance-policy.tmp.json && rm instance-policy.tmp.json
 aws iam create-instance-profile --instance-profile-name incident-ec2
 aws iam add-role-to-instance-profile --instance-profile-name incident-ec2 --role-name incident-ec2
 
@@ -134,6 +141,93 @@ aws ec2 authorize-security-group-ingress --group-id "$SG_ID" --ip-permissions \
   "IpProtocol=tcp,FromPort=22,ToPort=22,IpRanges=[{CidrIp=$MY_IP/32,Description=ssh}]"
 ```
 
+## Monitoring (CloudWatch)
+
+Every container's log lines go to the CloudWatch log group `/incident/<service>`. The services'
+JSON request lines and the backend's health checks contain [Embedded Metric Format](https://docs.aws.amazon.com/AmazonCloudWatch/latest/monitoring/CloudWatch_Embedded_Metric_Format_Specification.html)
+blocks, which CloudWatch turns into metrics in the `Incident` namespace, per `Service`:
+
+| Metric | Meaning |
+|---|---|
+| `Latency` | Request latency in ms (one data point per request) |
+| `Requests` | 1 per request |
+| `Errors` | 1 per 5xx response |
+| `HealthCheckFailed` | 1 if a health check (every 3 s, from the backend) found the service unhealthy or down, else 0 |
+
+`deploy/setup-cloudwatch.sh` creates three alarms per service (gateway, order, payment,
+inventory), each over 1-minute periods, firing when **2 of the last 3** minutes breach:
+
+| Alarm | Fires when |
+|---|---|
+| `incident-<service>-latency` | p90 latency above 2000 ms |
+| `incident-<service>-errors` | more than 20% of requests return 5xx |
+| `incident-<service>-health` | more than half of the health checks failed |
+
+Request metrics can be absent when there is no traffic, so the latency and error alarms treat
+missing data as OK. The backend emits health checks every 3 seconds while it is running; the
+health alarms instead show `INSUFFICIENT_DATA` when those samples stop arriving. That state
+means monitoring is unavailable, **not** that the service recovered. Check the EC2 instance
+state first: `stopped` is expected when you intentionally pause the demo; if it is `running`,
+check `incident.service`, the backend container, and CloudWatch log delivery. Step 6 must not
+interpret `INSUFFICIENT_DATA` as an `OK` recovery event.
+
+Where to look: CloudWatch console, Logs → Log groups → `/incident/payment`, Metrics → All
+metrics → `Incident`, and Alarms. From the CLI:
+
+```bash
+aws cloudwatch describe-alarms --alarm-name-prefix incident- \
+  --query 'MetricAlarms[].[AlarmName,StateValue]' --output table
+aws logs tail /incident/payment --since 5m --follow
+```
+
+Injecting `db_slow` on payment (dashboard → Simulation) flips payment's alarms to `ALARM`
+within about 2-3 minutes, followed by order's (the cascade). Recovering returns them to `OK`
+a few minutes later.
+
+**Cost and the $20 usage budget.** At list rates, 16 custom metrics are about $4.80/month.
+The eight latency/health alarms each evaluate one metric, while the four error-rate alarms
+each evaluate two: **16 alarm-metric units**, about $1.60/month before any free allowance.
+CloudWatch Logs also bills for ingestion. A 15-minute sample of this project's eight live
+log groups at the default 5 requests/second ingested 10.9 MB. If that rate ran all month,
+it would be about 31 GB of logs, not a few cents: using AWS's US-East example of 5 GB
+free and $0.50/GB thereafter, ingestion alone would be about $13/month, before log storage,
+EC2, its disk and public IPv4 address. This is an extrapolation, not a bill; rates and
+allowances vary by Region and account. **Do not leave the demo running continuously:** that
+would exceed the $20 usage budget. Stop the instance when you finish a session, and check
+Billing/Cost Explorer as usage accumulates. See [CloudWatch pricing](https://aws.amazon.com/cloudwatch/pricing/).
+
+**Upgrading an instance created before CloudWatch existed:** after this PR is merged to
+`main`, run the following from the repo root in Git Bash. Set up the log groups and alarms,
+then grant the existing instance role log-write access **before** enabling the EC2 compose
+layer. The old inline policy is removed after the replacement is installed.
+
+```bash
+export AWS_PROFILE=incident AWS_REGION=us-east-2 MSYS_NO_PATHCONV=1
+deploy/setup-cloudwatch.sh
+ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+sed "s/ACCOUNT_ID/$ACCOUNT_ID/" deploy/iam/instance-policy.json > instance-policy.tmp.json
+aws iam put-role-policy --role-name incident-ec2 --policy-name incident-instance \
+  --policy-document file://instance-policy.tmp.json && rm instance-policy.tmp.json
+if aws iam get-role-policy --role-name incident-ec2 --policy-name incident-backend >/dev/null 2>&1; then
+  aws iam delete-role-policy --role-name incident-ec2 --policy-name incident-backend
+fi
+
+INSTANCE_ID=$(aws ec2 describe-instances --filters Name=tag:Name,Values=incident \
+  Name=instance-state-name,Values=running \
+  --query 'Reservations[0].Instances[0].InstanceId' --output text)
+IP=$(aws ec2 describe-instances --instance-ids "$INSTANCE_ID" \
+  --query 'Reservations[0].Instances[0].PublicIpAddress' --output text)
+ssh -i ~/.ssh/incident-ec2.pem ubuntu@$IP \
+  "sudo sed -i '/^COMPOSE_FILE=/d' /opt/incident/.env && \
+   printf 'COMPOSE_FILE=docker-compose.yml:docker-compose.ec2.yml\n' | sudo tee -a /opt/incident/.env >/dev/null"
+ssh -i ~/.ssh/incident-ec2.pem ubuntu@$IP sudo /opt/incident/deploy/update.sh main
+```
+
+The last command ends with `verify.sh`. After it reports `OK`, check that a new request log
+appears in `/incident/payment` and the alarms are present with the CLI commands above. IAM
+policy changes can take a short time to reach EC2; if Docker reports an access-denied error
+when creating log streams, wait a minute and rerun `update.sh`.
+
 ## Tearing it all down
 
 ```bash
@@ -142,8 +236,10 @@ aws ec2 delete-security-group --group-name incident-ec2
 aws ec2 delete-key-pair --key-name incident-ec2
 aws iam remove-role-from-instance-profile --instance-profile-name incident-ec2 --role-name incident-ec2
 aws iam delete-instance-profile --instance-profile-name incident-ec2
-aws iam delete-role-policy --role-name incident-ec2 --policy-name incident-backend
+aws iam delete-role-policy --role-name incident-ec2 --policy-name incident-instance
 aws iam delete-role --role-name incident-ec2
+aws cloudwatch delete-alarms --alarm-names $(aws cloudwatch describe-alarms --alarm-name-prefix incident- --query 'MetricAlarms[].AlarmName' --output text)
+for g in gateway order payment inventory loadgen backend frontend postgres; do aws logs delete-log-group --log-group-name "/incident/$g"; done
 ```
 
 The DynamoDB table is separate and is not deleted by this.

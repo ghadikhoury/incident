@@ -2,7 +2,7 @@
   "Version": "2012-10-17",
   "Statement": [
     {
-      "Sid": "IncidentTableReadWrite",
+      "Sid": "BackendIncidentTable",
       "Effect": "Allow",
       "Action": [
         "dynamodb:GetItem",
@@ -14,6 +14,15 @@
       "Resource": [
         "arn:aws:dynamodb:us-east-2:ACCOUNT_ID:table/incident-store",
         "arn:aws:dynamodb:us-east-2:ACCOUNT_ID:table/incident-store/index/*"
+      ]
+    },
+    {
+      "Sid": "DockerShipsContainerLogs",
+      "Effect": "Allow",
+      "Action": ["logs:CreateLogStream", "logs:PutLogEvents"],
+      "Resource": [
+        "arn:aws:logs:us-east-2:ACCOUNT_ID:log-group:/incident/*",
+        "arn:aws:logs:us-east-2:ACCOUNT_ID:log-group:/incident/*:log-stream:*"
       ]
     }
   ]
