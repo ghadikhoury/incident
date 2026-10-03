@@ -32,7 +32,7 @@ services (Docker on EC2) ──logs/metrics──▶ CloudWatch ──alarm─�
 7. [x] Dependency graph, correlation, severity
 8. [x] AI diagnosis (Bedrock) + human approval (live model verification awaits account quota)
 9. [x] Incident detail page + evaluation harness
-10. [ ] Infrastructure as code (CDK), hardening, docs (final validation in progress)
+10. [x] Infrastructure as code (CDK), hardening, docs ([fresh deployment verified](docs/STEP10_VERIFICATION.md); migration of the original demo remains)
 
 ## Development
 

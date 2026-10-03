@@ -47,7 +47,13 @@ human approval, and retry. The live model call remains unverified because the AW
 account returned a daily-token quota error; the code records `UNAVAILABLE` and the
 incident remains usable. A positive Bedrock quota is needed for the Step 8 live criterion.
 
-**Step 9: in progress:** incident detail and evaluation harness.
+**Step 9: done** (PR #12): incident detail and evaluation harness. Live Bedrock
+diagnosis remains unavailable under the account's current quota.
+
+**Step 10: done in code and verified on an isolated fresh deployment** (PR #13):
+CDK, dashboard login, documentation, and demo video. The disposable CDK stack
+passed first-boot and `db_slow` checks, then was destroyed. Migrating the
+original CLI demo resources into CDK remains a separate operational task.
 
 ---
 

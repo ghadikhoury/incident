@@ -52,7 +52,10 @@ queues, logs, alarms, Lambda, roles, VPC, and EC2 instance; it also uses a
 separate metric namespace. It does not retain its data resources on deletion.
 Only destroy a stage after checking the account and exact stack name. The
 evidence bucket must be emptied before `cdk destroy` if a scenario wrote
-evidence. Its data is disposable; the original demo data is unaffected.
+evidence. In-flight backfill may write more evidence during deletion. If S3
+reports `DELETE_FAILED` because the bucket is not empty, wait for the instance
+and processor to finish deleting, empty that same stage bucket again, and retry
+`cdk destroy`. Its data is disposable; the original demo data is unaffected.
 
 For an empty account/region, using the `incident` AWS profile and an existing
 EC2 key pair, from the repository root:
