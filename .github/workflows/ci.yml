@@ -49,6 +49,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - name: EC2 compose layer is valid
+        run: docker compose -f docker-compose.yml -f docker-compose.ec2.yml config --quiet
       - name: Start services
         run: docker compose up -d --build --wait
       - name: Backend sees every service as healthy

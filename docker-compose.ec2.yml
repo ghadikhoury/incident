@@ -1,0 +1,52 @@
+# EC2 only, layered on top of docker-compose.yml. The instance's .env selects it with
+#   COMPOSE_FILE=docker-compose.yml:docker-compose.ec2.yml
+#
+# Ships every container's logs to CloudWatch Logs (/incident/<service>), where the EMF
+# blocks in the JSON lines become CloudWatch metrics. Docker's awslogs driver runs on the
+# host and authenticates with the instance role. The log groups are created (with a
+# retention period) by deploy/setup-cloudwatch.sh, not by the driver.
+#
+# mode: non-blocking: if CloudWatch is slow or unreachable, lines wait in a 4 MB buffer
+# (and are dropped if it fills) instead of blocking the services that write them.
+# `docker compose logs` keeps working: Docker also keeps a local copy ("dual logging").
+
+x-cloudwatch: &cloudwatch
+  driver: awslogs
+  options: &cloudwatch-options
+    awslogs-region: ${AWS_REGION:-us-east-2}
+    mode: non-blocking
+    max-buffer-size: 4m
+
+services:
+  gateway:
+    logging:
+      <<: *cloudwatch
+      options: {<<: *cloudwatch-options, awslogs-group: /incident/gateway}
+  order:
+    logging:
+      <<: *cloudwatch
+      options: {<<: *cloudwatch-options, awslogs-group: /incident/order}
+  payment:
+    logging:
+      <<: *cloudwatch
+      options: {<<: *cloudwatch-options, awslogs-group: /incident/payment}
+  inventory:
+    logging:
+      <<: *cloudwatch
+      options: {<<: *cloudwatch-options, awslogs-group: /incident/inventory}
+  loadgen:
+    logging:
+      <<: *cloudwatch
+      options: {<<: *cloudwatch-options, awslogs-group: /incident/loadgen}
+  backend:
+    logging:
+      <<: *cloudwatch
+      options: {<<: *cloudwatch-options, awslogs-group: /incident/backend}
+  frontend:
+    logging:
+      <<: *cloudwatch
+      options: {<<: *cloudwatch-options, awslogs-group: /incident/frontend}
+  postgres:
+    logging:
+      <<: *cloudwatch
+      options: {<<: *cloudwatch-options, awslogs-group: /incident/postgres}
