@@ -348,6 +348,9 @@ correctness, AI status, and an explicit *keyword-pattern estimate* of AI cause
 correctness. A quota failure is `UNAVAILABLE` and has no AI correctness score. Review
 the diagnosis text manually before treating that estimate as an accuracy claim.
 The polling interval adds up to five seconds to measured detection latency.
+The default recovery wait is eight minutes: heavy CPU work can leave queued requests
+with high latency for several minutes after the setting is cleared, and CloudWatch
+needs more healthy periods before its alarms return to OK.
 
 **Cost and the $20 usage budget.** At list rates, 20 custom metrics are about $6/month.
 The eight latency/health alarms each evaluate one metric, while the four error-rate alarms

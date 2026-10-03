@@ -209,7 +209,7 @@ def main() -> int:
     parser.add_argument("--output", type=Path, default=Path("results/step9.json"))
     parser.add_argument("--max-detect-s", type=float, default=360)
     parser.add_argument("--analysis-wait-s", type=float, default=150)
-    parser.add_argument("--max-recovery-s", type=float, default=360)
+    parser.add_argument("--max-recovery-s", type=float, default=480)
     parser.add_argument("--recovery-settle-s", type=float, default=90)
     parser.add_argument("--poll-s", type=float, default=5)
     parser.add_argument("--allow-crash-restart", action="store_true")

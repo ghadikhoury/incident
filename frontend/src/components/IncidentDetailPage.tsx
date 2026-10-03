@@ -35,7 +35,15 @@ function MetricChart({ metric, series, start, end }: {
             <text x="2" y="20" className="chart-label">{maximum.toFixed(metric === 'Latency' ? 0 : 1)}</text>
             <text x="35" y="145" className="chart-label">{new Date(start).toLocaleTimeString()}</text>
             <text x="475" y="145" className="chart-label">{new Date(end).toLocaleTimeString()}</text>
-            {shown.map((item, index) => (
+            {shown.map((item, index) => item.points.length === 1 ? (
+              <circle
+                key={item.service}
+                cx={45 + 540 * (Date.parse(item.points[0].at) - from) / span}
+                cy={125 - 105 * item.points[0].value / maximum}
+                r="3"
+                fill={COLORS[index % COLORS.length]}
+              />
+            ) : (
               <polyline
                 key={item.service}
                 fill="none"
