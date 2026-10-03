@@ -1,7 +1,6 @@
 """The alarm pipeline's durable behavior, using an in-memory DynamoDB table."""
 
 import json
-from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime
 
 import pytest
@@ -92,7 +91,7 @@ def test_alarm_creates_evidence_timeline_and_notification(store):
     assert worker.sqs.messages == [{"incident_id": incident_id, "event_id": "first"}]
 
 
-def test_five_simultaneous_alarms_share_one_incident(store):
+def test_five_nearby_alarms_share_one_incident(store):
     worker = pipeline(store)
     events = [
         event(str(i), service, signal, second=i)
@@ -106,11 +105,29 @@ def test_five_simultaneous_alarms_share_one_incident(store):
             ]
         )
     ]
-    with ThreadPoolExecutor(max_workers=5) as pool:
-        ids = list(pool.map(worker.process, events))
+    ids = [worker.process(alarm) for alarm in events]
     assert len(set(ids)) == 1
     assert len(store.list_incidents()) == 1
     assert len([entry for entry in store.timeline(ids[0]) if entry.kind == "alarm"]) == 5
+
+
+def test_competing_create_wins_between_read_and_conditional_write(store):
+    worker = pipeline(store)
+    original = store._transact
+    competitor_id = None
+
+    def interleave(items):
+        nonlocal competitor_id
+        if competitor_id is None:
+            competitor_id = "in progress"
+            competitor_id = worker.process(event("competitor", "order", "errors", second=1))
+        return original(items)
+
+    store._transact = interleave
+    incident_id = worker.process(event("primary"))
+    assert incident_id == competitor_id
+    assert len(store.list_incidents()) == 1
+    assert len([entry for entry in store.timeline(incident_id) if entry.kind == "alarm"]) == 2
 
 
 def test_retry_does_not_duplicate_incident_or_timeline(store):
@@ -156,6 +173,13 @@ def test_late_alarm_does_not_undo_a_newer_ok(store):
     assert worker.process(event("recovered", state="OK", second=2)) is None
     assert worker.process(event("late", second=1)) is None
     assert store.list_incidents() == []
+
+
+def test_same_timestamp_duplicate_state_change_is_ignored(store):
+    worker = pipeline(store)
+    incident_id = worker.process(event("first"))
+    assert worker.process(event("other-event-id")) is None
+    assert len(store.timeline(incident_id)) == 2
 
 
 def test_resolved_incident_is_not_reused(store):

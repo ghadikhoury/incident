@@ -19,12 +19,16 @@ SERVICES = {service.name for service in config.SERVICES}
 SIGNALS = {"health", "errors", "latency"}
 
 
+class IgnoredAlarm(Exception):
+    """An EventBridge event outside this demo's managed alarm set."""
+
+
 def _transition(event: dict) -> tuple[str, str, str, datetime]:
     if (
         event.get("source") != "aws.cloudwatch"
         or event.get("detail-type") != "CloudWatch Alarm State Change"
     ):
-        raise ValueError("not a CloudWatch alarm state change")
+        raise IgnoredAlarm("not a CloudWatch alarm state change")
     detail = event["detail"]
     name = detail["alarmName"]
     parts = name.split("-")
@@ -34,10 +38,10 @@ def _transition(event: dict) -> tuple[str, str, str, datetime]:
         or parts[1] not in SERVICES
         or parts[2] not in SIGNALS
     ):
-        raise ValueError(f"unmanaged alarm: {name}")
+        raise IgnoredAlarm(f"unmanaged alarm: {name}")
     state = detail["state"]["value"]
     if state not in {"ALARM", "OK", "INSUFFICIENT_DATA"}:
-        raise ValueError(f"unknown alarm state: {state}")
+        raise IgnoredAlarm(f"unknown alarm state: {state}")
     when = datetime.fromisoformat(detail["state"]["timestamp"].replace("Z", "+00:00"))
     if when.utcoffset() is None:
         raise ValueError("alarm timestamp must have a timezone")
@@ -134,7 +138,7 @@ class AlarmPipeline:
             alarm = table.get_item(
                 Key={"pk": f"ALARM#{name}", "sk": "CURRENT"}, ConsistentRead=True
             ).get("Item")
-            if alarm and alarm["state_at"] > ts:
+            if alarm and alarm["state_at"] >= ts:
                 return None  # stale transition; newer state already recorded
             if state == "OK":
                 incident_id = alarm.get("incident_id") if alarm else None
@@ -249,7 +253,7 @@ class AlarmPipeline:
                         "UpdateExpression": (
                             "SET state_at = :at, #state = :state, incident_id = :id"
                         ),
-                        "ConditionExpression": "attribute_not_exists(state_at) OR state_at <= :at",
+                        "ConditionExpression": "attribute_not_exists(state_at) OR state_at < :at",
                         "ExpressionAttributeNames": {"#state": "state"},
                         "ExpressionAttributeValues": {
                             ":at": ts,
@@ -360,7 +364,7 @@ class AlarmPipeline:
 def lambda_handler(event: dict, context):
     try:
         incident_id = AlarmPipeline.from_environment().process(event)
-    except ValueError:
+    except IgnoredAlarm:
         LOG.info("Ignoring unrelated alarm event", exc_info=True)
         return {"ignored": True}
     return {"incident_id": incident_id}

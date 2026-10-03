@@ -168,8 +168,9 @@ missing data as OK. The backend emits health checks every 3 seconds while it is 
 health alarms instead show `INSUFFICIENT_DATA` when those samples stop arriving. That state
 means monitoring is unavailable, **not** that the service recovered. Check the EC2 instance
 state first: `stopped` is expected when you intentionally pause the demo; if it is `running`,
-check `incident.service`, the backend container, and CloudWatch log delivery. Step 6 must not
-interpret `INSUFFICIENT_DATA` as an `OK` recovery event.
+check `incident.service`, the backend container, and CloudWatch log delivery. The Step 6
+pipeline records a monitoring-degraded incident while EC2 is running and does not interpret
+`INSUFFICIENT_DATA` as an `OK` recovery event.
 
 Where to look: CloudWatch console, Logs → Log groups → `/incident/payment`, Metrics → All
 metrics → `Incident`, and Alarms. From the CLI:
@@ -283,3 +284,6 @@ for g in gateway order payment inventory loadgen backend frontend postgres; do a
 ```
 
 The DynamoDB table is separate and is not deleted by this.
+Step 6 also creates an EventBridge rule, Lambda function and role, SQS queue, and S3 bucket;
+remove those separately if retiring the demo. The S3 bucket contains incident evidence,
+so inspect it before deleting it.
