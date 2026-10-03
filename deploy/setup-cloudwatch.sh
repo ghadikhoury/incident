@@ -31,13 +31,13 @@ for name in "${LOG_GROUPS[@]}"; do
   echo "log group $group (retention ${RETENTION_DAYS}d)"
 done
 
-# Settings shared by every alarm. Missing data (e.g. no traffic at night) is not a problem.
+# Settings shared by every alarm. Missing data differs by signal: requests can stop
+# legitimately, but the backend emits health checks continuously while it is running.
 # (--period is passed separately: alarms built from --metrics carry it per metric instead.)
 common=(
   --evaluation-periods "$EVALUATION_PERIODS"
   --datapoints-to-alarm "$DATAPOINTS_TO_ALARM"
   --comparison-operator GreaterThanThreshold
-  --treat-missing-data notBreaching
   --tags "Key=Project,Value=incident"
 )
 
@@ -49,6 +49,7 @@ metric_stat() {  # metric_stat <id> <metric> <service> <stat>
 for service in "${MONITORED[@]}"; do
   aws cloudwatch put-metric-alarm "${common[@]}" \
     --alarm-name "incident-$service-latency" \
+    --treat-missing-data notBreaching \
     --alarm-description "$service: p90 latency above ${LATENCY_P90_MS} ms" \
     --namespace "$NAMESPACE" --metric-name Latency \
     --dimensions "Name=Service,Value=$service" --period "$PERIOD" \
@@ -57,6 +58,7 @@ for service in "${MONITORED[@]}"; do
   # Error rate = 5xx / all requests, in percent. IF() avoids dividing by zero.
   aws cloudwatch put-metric-alarm "${common[@]}" \
     --alarm-name "incident-$service-errors" \
+    --treat-missing-data notBreaching \
     --alarm-description "$service: more than ${ERROR_RATE_PERCENT}% of requests fail with 5xx" \
     --threshold "$ERROR_RATE_PERCENT" \
     --metrics "[$(metric_stat errors Errors "$service" Sum),$(metric_stat requests Requests "$service" Sum),{\"Id\":\"error_rate\",\"Expression\":\"IF(requests > 0, 100 * errors / requests, 0)\",\"Label\":\"5xx error rate (%)\",\"ReturnData\":true}]"
@@ -64,6 +66,7 @@ for service in "${MONITORED[@]}"; do
   # Average of 0/1 per health check = fraction of failed checks in the period.
   aws cloudwatch put-metric-alarm "${common[@]}" \
     --alarm-name "incident-$service-health" \
+    --treat-missing-data missing \
     --alarm-description "$service: more than half of its health checks failed (down or unhealthy)" \
     --namespace "$NAMESPACE" --metric-name HealthCheckFailed \
     --dimensions "Name=Service,Value=$service" --period "$PERIOD" \

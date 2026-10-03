@@ -27,10 +27,10 @@ Incident is meant to be a genuine, usable product (startup-style), built on AWS 
 
 **Step 4: done ✅** (PR #6): EC2 deployment, see [DEPLOY.md](DEPLOY.md).
 - [x] Instance `incident` (t3.small, Ubuntu 24.04) running the full stack; only SSH is open (from your IP), the dashboard is reached through an SSH tunnel
-- [x] IAM role `incident-ec2`: DynamoDB `incident-store` only (verified: everything else is denied)
+- [x] IAM role `incident-ec2`: DynamoDB `incident-store` access, plus log-write access to `/incident/*` after Step 5
 - [x] Survives stop/start (boot service); **stop it when not in use**
 
-**Step 5: in review** (PRs #7, #8): CloudWatch detection.
+**Step 5: in review** (PR #7 merged, PR #8 open): CloudWatch detection.
 - [x] Services and the backend's health monitor emit metrics in their log lines (EMF): `Latency`, `Requests`, `Errors`, `HealthCheckFailed` per service
 - [x] Logs shipped to `/incident/<service>` on EC2; 12 alarms (latency p90, 5xx rate, health × 4 services)
 - [x] Verified live: `db_slow` → `incident-payment-latency` ALARM after 103 s (then errors, health, and order/gateway as the cascade); all back to OK 216 s after recovery
@@ -165,7 +165,7 @@ Each step = one branch + one PR. For each step Claude explains what we're doing,
   3. runs a CloudWatch Logs Insights query for that ±5-minute window and writes the logs and metrics to `s3://incident-evidence-<acct>/incidents/INC-xxxx/`
   4. appends to the incident timeline
   5. sends an "incident changed" message to **SQS**
-- Backend long-polls SQS and pushes over the WebSocket. Alarm returning to `OK` is recorded on the timeline.
+- Backend long-polls SQS and pushes over the WebSocket. Alarm returning to `OK` is recorded on the timeline. A health alarm in `INSUFFICIENT_DATA` means the monitoring stream has stopped, not that a service recovered: check whether EC2 was intentionally stopped; if it is running, surface monitoring as degraded without resolving the incident.
 - A least-privilege IAM role for the Lambda (only this table, this bucket, this queue, and reading these logs).
 - **🎯 Milestone: inject a failure on the dashboard → about 2 min later a real incident pops up live, with evidence in S3.** From here on there is always a demo.
 
@@ -215,7 +215,7 @@ Each step = one branch + one PR. For each step Claude explains what we're doing,
 - Skip PRs only for trivial fixes like README typos.
 
 ## Cost expectations (paid from the $100 Free Plan credits)
-EC2 about $0.04/hr only while running (~$30/month if left on 24/7, so stop it when not working). CloudWatch custom metrics and alarms around $5–10/month. Lambda, SQS, DynamoDB and S3 about $0 at our scale. Bedrock is fractions of a cent per diagnosis. The **$20 budget alert** emails you as credits are used.
+EC2 is about $0.02/hour while running, plus its disk and public IPv4 address. CloudWatch's 16 custom metrics and alarm-metric units are about $6.40/month at list rates before allowances; logs add usage-based ingestion and storage (the measured 5-request/second demo rate would ingest about 31 GB/month if left on continuously). A 24/7 deployment would exceed the **$20 usage budget**, even while Free Plan credits cover the charges, so stop the instance when not working. See [DEPLOY.md](DEPLOY.md) for the measurement and assumptions. Lambda, SQS, DynamoDB and S3 should be small at our scale; verify actual usage in Billing. Bedrock cost depends on the chosen model and usage.
 
 ## Verification (final end-to-end demo)
 1. `cdk deploy` + `docker compose up -d` on EC2 → dashboard all green.

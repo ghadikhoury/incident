@@ -163,6 +163,14 @@ inventory), each over 1-minute periods, firing when **2 of the last 3** minutes 
 | `incident-<service>-errors` | more than 20% of requests return 5xx |
 | `incident-<service>-health` | more than half of the health checks failed |
 
+Request metrics can be absent when there is no traffic, so the latency and error alarms treat
+missing data as OK. The backend emits health checks every 3 seconds while it is running; the
+health alarms instead show `INSUFFICIENT_DATA` when those samples stop arriving. That state
+means monitoring is unavailable, **not** that the service recovered. Check the EC2 instance
+state first: `stopped` is expected when you intentionally pause the demo; if it is `running`,
+check `incident.service`, the backend container, and CloudWatch log delivery. Step 6 must not
+interpret `INSUFFICIENT_DATA` as an `OK` recovery event.
+
 Where to look: CloudWatch console, Logs → Log groups → `/incident/payment`, Metrics → All
 metrics → `Incident`, and Alarms. From the CLI:
 
@@ -176,12 +184,49 @@ Injecting `db_slow` on payment (dashboard → Simulation) flips payment's alarms
 within about 2-3 minutes, followed by order's (the cascade). Recovering returns them to `OK`
 a few minutes later.
 
-**Cost** (from credits): about 16 custom metrics at $0.30/month each, 12 alarms at
-$0.10/month each, and a few cents for log ingestion and storage.
+**Cost and the $20 usage budget.** At list rates, 16 custom metrics are about $4.80/month.
+The eight latency/health alarms each evaluate one metric, while the four error-rate alarms
+each evaluate two: **16 alarm-metric units**, about $1.60/month before any free allowance.
+CloudWatch Logs also bills for ingestion. A 15-minute sample of this project's eight live
+log groups at the default 5 requests/second ingested 10.9 MB. If that rate ran all month,
+it would be about 31 GB of logs, not a few cents: using AWS's US-East example of 5 GB
+free and $0.50/GB thereafter, ingestion alone would be about $13/month, before log storage,
+EC2, its disk and public IPv4 address. This is an extrapolation, not a bill; rates and
+allowances vary by Region and account. **Do not leave the demo running continuously:** that
+would exceed the $20 usage budget. Stop the instance when you finish a session, and check
+Billing/Cost Explorer as usage accumulates. See [CloudWatch pricing](https://aws.amazon.com/cloudwatch/pricing/).
 
-**Upgrading an instance created before CloudWatch existed:** add
-`COMPOSE_FILE=docker-compose.yml:docker-compose.ec2.yml` to `/opt/incident/.env`, then run
-`update.sh`.
+**Upgrading an instance created before CloudWatch existed:** after this PR is merged to
+`main`, run the following from the repo root in Git Bash. Set up the log groups and alarms,
+then grant the existing instance role log-write access **before** enabling the EC2 compose
+layer. The old inline policy is removed after the replacement is installed.
+
+```bash
+export AWS_PROFILE=incident AWS_REGION=us-east-2 MSYS_NO_PATHCONV=1
+deploy/setup-cloudwatch.sh
+ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+sed "s/ACCOUNT_ID/$ACCOUNT_ID/" deploy/iam/instance-policy.json > instance-policy.tmp.json
+aws iam put-role-policy --role-name incident-ec2 --policy-name incident-instance \
+  --policy-document file://instance-policy.tmp.json && rm instance-policy.tmp.json
+if aws iam get-role-policy --role-name incident-ec2 --policy-name incident-backend >/dev/null 2>&1; then
+  aws iam delete-role-policy --role-name incident-ec2 --policy-name incident-backend
+fi
+
+INSTANCE_ID=$(aws ec2 describe-instances --filters Name=tag:Name,Values=incident \
+  Name=instance-state-name,Values=running \
+  --query 'Reservations[0].Instances[0].InstanceId' --output text)
+IP=$(aws ec2 describe-instances --instance-ids "$INSTANCE_ID" \
+  --query 'Reservations[0].Instances[0].PublicIpAddress' --output text)
+ssh -i ~/.ssh/incident-ec2.pem ubuntu@$IP \
+  "sudo sed -i '/^COMPOSE_FILE=/d' /opt/incident/.env && \
+   printf 'COMPOSE_FILE=docker-compose.yml:docker-compose.ec2.yml\n' | sudo tee -a /opt/incident/.env >/dev/null"
+ssh -i ~/.ssh/incident-ec2.pem ubuntu@$IP sudo /opt/incident/deploy/update.sh main
+```
+
+The last command ends with `verify.sh`. After it reports `OK`, check that a new request log
+appears in `/incident/payment` and the alarms are present with the CLI commands above. IAM
+policy changes can take a short time to reach EC2; if Docker reports an access-denied error
+when creating log streams, wait a minute and rerun `update.sh`.
 
 ## Tearing it all down
 
