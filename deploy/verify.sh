@@ -6,10 +6,14 @@
 set -euo pipefail
 
 API="${API_URL:-http://127.0.0.1:3000/api}"  # API_URL: check a different deployment
+auth=()
+if [ -f /etc/incident/dashboard.netrc ]; then
+  auth=(--netrc-file /etc/incident/dashboard.netrc)
+fi
 
-curl -fsS "$API/health" >/dev/null
+curl -fsS "${auth[@]}" "$API/health" >/dev/null
 
-if ! curl -fsS -o /dev/null "$API/incidents?active=true"; then
+if ! curl -fsS "${auth[@]}" -o /dev/null "$API/incidents?active=true"; then
   echo "FAIL: incident API can't read DynamoDB. Is incident-store set up (docs/DEPLOY.md," \
     "step 0) and does the instance role allow it?" >&2
   exit 1
@@ -18,12 +22,12 @@ fi
 # The health monitor polls every 3 s; give freshly started services up to a minute.
 all_healthy='import json, sys; sys.exit(any(s["status"] != "healthy" for s in json.load(sys.stdin)))'
 for _ in $(seq 1 30); do
-  if curl -fsS "$API/services" | python3 -c "$all_healthy"; then
+  if curl -fsS "${auth[@]}" "$API/services" | python3 -c "$all_healthy"; then
     echo "OK: dashboard, incident API (DynamoDB) and all services healthy"
     exit 0
   fi
   sleep 2
 done
 echo "FAIL: not all services became healthy:" >&2
-curl -fsS "$API/services" >&2
+curl -fsS "${auth[@]}" "$API/services" >&2
 exit 1

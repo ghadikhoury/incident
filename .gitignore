@@ -24,6 +24,9 @@ build/
 
 # AWS CDK
 cdk.out/
+infra/.build/
+docs/demo/.build/
+.tmp/
 
 # Editors / OS
 .vscode/

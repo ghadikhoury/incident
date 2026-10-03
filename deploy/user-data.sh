@@ -19,7 +19,7 @@ fi
 
 # Docker Engine + Compose plugin from Docker's official apt repository.
 apt-get update
-apt-get install -y ca-certificates curl git
+apt-get install -y ca-certificates curl git openssl
 install -m 0755 -d /etc/apt/keyrings
 curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc
 chmod a+r /etc/apt/keyrings/docker.asc
@@ -37,9 +37,12 @@ AWS_REGION=us-east-2
 # No named profile on EC2: the backend gets credentials from the instance's IAM role.
 AWS_PROFILE=
 INCIDENT_QUEUE_URL=
+INCIDENT_EVIDENCE_BUCKET=
 # Add the EC2 layer: ships container logs (and the metrics in them) to CloudWatch.
 COMPOSE_FILE=docker-compose.yml:docker-compose.ec2.yml
 EOF
+
+"$APP_DIR/deploy/setup-dashboard-auth.sh"
 
 # Start the stack on every boot (e.g. after stopping the instance to save credits).
 install -m 0644 "$APP_DIR/deploy/incident.service" /etc/systemd/system/incident.service

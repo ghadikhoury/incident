@@ -22,6 +22,17 @@ recovery gate. These measurements used the same detection and correlation code;
 the slow-database run preceded later UI and CPU-recovery-only changes. The final
 CPU run used commit `ac7bf99`.
 
+Earlier development runs are not counted in that four-case summary:
+
+| Failure and revision | Incident | Detection (s) | Alarms | Root | Recovery result |
+| --- | --- | ---: | ---: | --- | --- |
+| Every-second-request intermittent fault, before timed bursts | INC-1013 | 140.2 | 3 | inventory (correct) | passed |
+| CPU pressure, six-minute recovery limit | INC-1014 | 135.3 | 5 | inventory (correct) | timed out; all alarms later returned to OK and the incident was resolved |
+| CPU pressure, eight-minute recovery limit before cancellation fix | INC-1016 | 135.9 | 5 | inventory (correct) | passed |
+
+The first CPU timeout exposed queued CPU work continuing after the fault setting
+was cleared. The later run on `ac7bf99` verifies the cancellation fix.
+
 The CPU test produced measured inventory process CPU utilization above 94% in
 CloudWatch's one-minute averages during the fault. It was detected by latency and
 downstream error alarms; there is no separate CPU alarm. In an earlier run, clearing

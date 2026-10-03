@@ -94,7 +94,7 @@ services:
     depends_on:
       backend: {condition: service_started}
     healthcheck:
-      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1/"]
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1/ready"]
       interval: 10s
       timeout: 3s
       retries: 3

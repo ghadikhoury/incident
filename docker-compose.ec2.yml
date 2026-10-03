@@ -43,6 +43,9 @@ services:
       <<: *cloudwatch
       options: {<<: *cloudwatch-options, awslogs-group: /incident/backend}
   frontend:
+    volumes:
+      - ./deploy/nginx-auth.conf:/etc/nginx/snippets/incident-auth.conf:ro
+      - /etc/incident/dashboard.htpasswd:/etc/nginx/.htpasswd:ro
     logging:
       <<: *cloudwatch
       options: {<<: *cloudwatch-options, awslogs-group: /incident/frontend}

@@ -210,6 +210,8 @@ class IncidentStore:
     def correlation_update_action(self, incident: Incident, fields: dict) -> dict:
         """Update derived fields only if the incident has not changed since read."""
         changes = {**fields, "updated_at": now_iso()}
+        if incident.title_source == "generated" and fields.get("probable_root"):
+            changes["title"] = f"{fields['probable_root']} incident"
         names = {f"#{name}": name for name in [*changes, "status"]}
         values = {f":{name}": _dynamo_value(value) for name, value in changes.items()}
         values.update({":old": incident.updated_at, ":resolved": Status.RESOLVED.value})
@@ -472,6 +474,8 @@ class IncidentStore:
         """
         now = now_iso()
         sets = {"updated_at": now}
+        if "title" in changes:
+            sets["title_source"] = "manual"
         removes = []
         for field, value in changes.items():
             if value is None:

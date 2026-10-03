@@ -151,6 +151,7 @@ def test_cascade_names_payment_as_probable_root_and_tracks_alerts(store):
     incident = store.get(first)
     assert len(store.list_incidents()) == 1
     assert incident.probable_root == "payment"
+    assert incident.title == "payment incident"
     assert incident.service == "payment"
     assert incident.downstream_services == ["gateway", "order"]
     assert incident.correlation_label == "PROBABLE CASCADING FAILURE"
@@ -160,6 +161,18 @@ def test_cascade_names_payment_as_probable_root_and_tracks_alerts(store):
         "incident-payment-latency",
         "incident-gateway-errors",
     }
+
+
+def test_manual_title_survives_later_correlated_alarms(store):
+    worker = pipeline(store)
+    incident_id = worker.process(event("order-first", "order", "errors", second=0))
+    assert store.get(incident_id).title == "order incident"
+    store.update(incident_id, {"title": "Checkout outage"}, [], "engineer")
+    assert worker.process(event("payment", "payment", "latency", second=2)) == incident_id
+    incident = store.get(incident_id)
+    assert incident.probable_root == "payment"
+    assert incident.title == "Checkout outage"
+    assert incident.title_source == "manual"
 
 
 def test_sibling_failures_remain_distinct_even_when_upstream_alarm_joins_one(store):

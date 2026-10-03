@@ -211,6 +211,8 @@ class AlarmPipeline:
                         else f"Monitoring degraded: {service}"
                     )
                     analysis = analyze([incoming], GRAPH)
+                    if state == "ALARM" and analysis["probable_root"]:
+                        title = f"{analysis['probable_root']} incident"
                     incident, create_actions = self.store.automatic_incident_actions(
                         IncidentCreate(
                             title=title,
@@ -218,7 +220,7 @@ class AlarmPipeline:
                             trigger="CLOUDWATCH",
                             summary=f"{name} entered {state}",
                         ),
-                        analysis,
+                        {**analysis, "title_source": "generated"},
                     )
                 else:
                     analysis = analyze(upsert_alert(self._alerts(incident), incoming), GRAPH)

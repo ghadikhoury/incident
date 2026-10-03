@@ -55,6 +55,7 @@ class Diagnosis(BaseModel):
 class Incident(BaseModel):
     incident_id: str
     title: str
+    title_source: Literal["manual", "generated"] = "manual"
     service: str
     severity: Severity
     status: Status

@@ -17,6 +17,9 @@ jobs:
         with:
           python-version: "3.12"
       - run: pip install -r requirements-dev.txt
+      - run: pip install -r infra/requirements.txt
+      - name: Build Lambda asset for CDK checks
+        run: python -m infra.build
       - name: Lint
         run: ruff check . && ruff format --check .
       - name: Lint deploy scripts
