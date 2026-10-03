@@ -8,6 +8,7 @@ import contextlib
 import json
 import logging
 from contextlib import asynccontextmanager
+from datetime import UTC, datetime, timedelta
 
 import boto3
 import httpx
@@ -16,9 +17,12 @@ from starlette.concurrency import run_in_threadpool
 
 from incident_api import config, simulation
 from incident_api.dependency import GRAPH
+from incident_api.diagnosis.engine import DiagnosisEngine
 from incident_api.health import HealthMonitor, ServiceHealth
 from incident_api.hub import Hub
 from incident_api.models import (
+    Diagnosis,
+    DiagnosisDecision,
     Incident,
     IncidentAction,
     IncidentCreate,
@@ -40,11 +44,14 @@ def create_app(
     health_interval_s: float = config.HEALTH_INTERVAL_S,
     queue_url: str | None = config.QUEUE_URL,
     sqs_client=None,
+    diagnosis_engine: DiagnosisEngine | None = None,
+    diagnosis_delay_s: float = 10,
 ) -> FastAPI:
     store = store or IncidentStore.from_config()
     client = http_client or httpx.AsyncClient()
     hub = Hub()
     services_by_name = {s.name: s for s in services}
+    diagnosis_tasks: dict[str, asyncio.Task] = {}
 
     async def broadcast_services(snapshot: list[ServiceHealth]) -> None:
         await hub.broadcast({"type": "services", "data": [s.model_dump() for s in snapshot]})
@@ -72,6 +79,7 @@ def create_app(
                         incident = await run_in_threadpool(store.get, incident_id)
                         if incident is not None:
                             await broadcast_incident(incident)
+                            schedule_diagnosis(incident.incident_id)
                         await asyncio.to_thread(
                             sqs.delete_message,
                             QueueUrl=queue_url,
@@ -90,19 +98,138 @@ def create_app(
                 LOG.exception("SQS incident update failed; retrying")
                 await asyncio.sleep(2)
 
+    async def diagnose(incident_id: str) -> None:
+        try:
+            await asyncio.sleep(diagnosis_delay_s)  # allow alarms to join the evidence set
+            incident = await run_in_threadpool(store.get, incident_id)
+            if incident is None or incident.status == Status.RESOLVED:
+                return
+            timeline = await run_in_threadpool(store.timeline, incident_id)
+            if not any(event.kind == "evidence" for event in timeline):
+                return
+            claim = await run_in_threadpool(store.claim_diagnosis, incident_id)
+            if claim is None:
+                return
+            await broadcast_incident(await run_in_threadpool(store.get, incident_id))
+            try:
+                engine = diagnosis_engine or await run_in_threadpool(DiagnosisEngine.from_config)
+                result = await run_in_threadpool(
+                    engine.analyze, incident, timeline, set(services_by_name), claim
+                )
+            except Exception:
+                LOG.exception("AI analysis failed for %s", incident_id)
+                result = Diagnosis(status="UNAVAILABLE", claimed_at=claim)
+            updated = await run_in_threadpool(store.finish_diagnosis, incident_id, claim, result)
+            if updated:
+                await broadcast_incident(updated)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            LOG.exception("Diagnosis worker failed for %s", incident_id)
+        finally:
+            diagnosis_tasks.pop(incident_id, None)
+
+    def schedule_diagnosis(incident_id: str) -> None:
+        if not queue_url and diagnosis_engine is None:
+            return
+        if incident_id not in diagnosis_tasks:
+            diagnosis_tasks[incident_id] = asyncio.create_task(diagnose(incident_id))
+
+    async def execute_recommendation(incident_id: str, action_id: str) -> Incident:
+        incident = await run_in_threadpool(store.get, incident_id)
+        if incident is None:
+            raise HTTPException(404, f"incident {incident_id} not found")
+        actions = incident.diagnosis.recommended_actions if incident.diagnosis else []
+        match = next(((i, a) for i, a in enumerate(actions) if a.id == action_id), None)
+        if match is None:
+            raise HTTPException(404, f"recommendation {action_id} not found")
+        index, action = match
+        stale_before = (datetime.now(UTC) - timedelta(minutes=5)).isoformat(timespec="milliseconds")
+        if action.status == "EXECUTING" and (
+            not action.changed_at or action.changed_at >= stale_before
+        ):
+            return incident
+        if action.status not in {"APPROVED", "EXECUTING"}:
+            return incident
+        try:
+            incident = await run_in_threadpool(
+                store.change_recommendation,
+                incident_id,
+                index,
+                action_id,
+                action.status,
+                "EXECUTING",
+                action.decided_by or "engineer",
+                f"Approved remediation started: {action_id}",
+                stale_before=stale_before if action.status == "EXECUTING" else None,
+            )
+        except Conflict:
+            return await run_in_threadpool(store.get, incident_id)
+        await broadcast_incident(incident)
+        try:
+            if action.action != "clear_chaos" or action.service not in services_by_name:
+                raise ValueError("recommendation is outside the remediation allowlist")
+            await simulation.recover(client, services_by_name[action.service])
+            outcome = "SUCCEEDED"
+        except Exception:
+            LOG.exception("Approved remediation failed for %s", incident_id)
+            outcome = "FAILED"
+        incident = await run_in_threadpool(
+            store.change_recommendation,
+            incident_id,
+            index,
+            action_id,
+            "EXECUTING",
+            outcome,
+            action.decided_by or "engineer",
+            f"Remediation {action_id} {outcome.lower()}",
+        )
+        await broadcast_incident(incident)
+        if outcome == "SUCCEEDED":
+            with contextlib.suppress(Exception):
+                await monitor.poll_once()
+        return incident
+
+    async def check_background_work() -> None:
+        while True:
+            try:
+                for incident in await run_in_threadpool(store.list_incidents, True):
+                    if incident.diagnosis is None or incident.diagnosis.status == "RUNNING":
+                        schedule_diagnosis(incident.incident_id)
+                    elif incident.diagnosis.status == "READY":
+                        for action in incident.diagnosis.recommended_actions:
+                            if action.status in {"APPROVED", "EXECUTING"}:
+                                await execute_recommendation(incident.incident_id, action.id)
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                LOG.exception("Diagnosis recovery scan failed")
+            await asyncio.sleep(60)
+
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         task = asyncio.create_task(monitor.run(health_interval_s))
         queue_task = asyncio.create_task(consume_updates()) if queue_url else None
+        diagnosis_task = asyncio.create_task(check_background_work()) if queue_url else None
         yield
         task.cancel()
         if queue_task:
             queue_task.cancel()
+        if diagnosis_task:
+            diagnosis_task.cancel()
+        for worker in diagnosis_tasks.values():
+            worker.cancel()
         with contextlib.suppress(asyncio.CancelledError):
             await task
         if queue_task:
             with contextlib.suppress(asyncio.CancelledError):
                 await queue_task
+        if diagnosis_task:
+            with contextlib.suppress(asyncio.CancelledError):
+                await diagnosis_task
+        for worker in list(diagnosis_tasks.values()):
+            with contextlib.suppress(asyncio.CancelledError):
+                await worker
         if http_client is None:
             await client.aclose()
 
@@ -203,6 +330,64 @@ def create_app(
         return await change_incident(
             incident_id, {"status": Status.RESOLVED}, [("status", message)], body.actor
         )
+
+    @app.post("/api/incidents/{incident_id}/recommendations/{action_id}/approve")
+    async def approve_recommendation(
+        incident_id: str, action_id: str, body: DiagnosisDecision
+    ) -> Incident:
+        incident = await run_in_threadpool(store.get, incident_id)
+        if incident is None:
+            raise HTTPException(404, f"incident {incident_id} not found")
+        actions = incident.diagnosis.recommended_actions if incident.diagnosis else []
+        match = next(((i, a) for i, a in enumerate(actions) if a.id == action_id), None)
+        if match is None:
+            raise HTTPException(404, f"recommendation {action_id} not found")
+        index, action = match
+        if action.status not in {"PENDING", "FAILED"}:
+            raise HTTPException(409, "recommendation has already been decided")
+        try:
+            updated = await run_in_threadpool(
+                store.change_recommendation,
+                incident_id,
+                index,
+                action_id,
+                action.status,
+                "APPROVED",
+                body.actor,
+                f"Approved remediation: {action_id}",
+            )
+        except Conflict as exc:
+            raise HTTPException(409, str(exc)) from exc
+        await broadcast_incident(updated)
+        return await execute_recommendation(incident_id, action_id)
+
+    @app.post("/api/incidents/{incident_id}/recommendations/{action_id}/reject")
+    async def reject_recommendation(
+        incident_id: str, action_id: str, body: DiagnosisDecision
+    ) -> Incident:
+        incident = await run_in_threadpool(store.get, incident_id)
+        if incident is None:
+            raise HTTPException(404, f"incident {incident_id} not found")
+        actions = incident.diagnosis.recommended_actions if incident.diagnosis else []
+        match = next(((i, a) for i, a in enumerate(actions) if a.id == action_id), None)
+        if match is None:
+            raise HTTPException(404, f"recommendation {action_id} not found")
+        index, _ = match
+        try:
+            updated = await run_in_threadpool(
+                store.change_recommendation,
+                incident_id,
+                index,
+                action_id,
+                "PENDING",
+                "REJECTED",
+                body.actor,
+                f"Rejected remediation: {action_id}",
+            )
+        except Conflict as exc:
+            raise HTTPException(409, str(exc)) from exc
+        await broadcast_incident(updated)
+        return updated
 
     @app.post("/api/simulation/failure")
     async def inject_failure(body: simulation.FailureRequest) -> dict:

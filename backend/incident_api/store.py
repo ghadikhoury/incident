@@ -11,7 +11,7 @@ from boto3.dynamodb.conditions import Key
 from botocore.exceptions import ClientError
 
 from incident_api import config
-from incident_api.models import Incident, IncidentCreate, Status, TimelineEvent
+from incident_api.models import Diagnosis, Incident, IncidentCreate, Status, TimelineEvent
 
 LIST_LIMIT = 200
 ACTIVE = "ACTIVE"
@@ -25,13 +25,22 @@ class Conflict(Exception):
     pass
 
 
+def _conditional_failure(exc: ClientError) -> bool:
+    return exc.response.get("Error", {}).get("Code") == "TransactionCanceledException" and any(
+        reason.get("Code") == "ConditionalCheckFailed"
+        for reason in exc.response.get("CancellationReasons", [])
+    )
+
+
 _EPOCH = datetime(1970, 1, 1, tzinfo=UTC)
 _clock_lock = threading.Lock()
 _last_us = 0
 
 
 def now_iso() -> str:
-    return datetime.now(UTC).isoformat(timespec="milliseconds")
+    # WebSocket and REST responses can race; strictly increasing timestamps let
+    # the dashboard reject an older snapshot even for rapid consecutive writes.
+    return _unique_now().isoformat(timespec="microseconds")
 
 
 def _unique_now() -> datetime:
@@ -233,6 +242,152 @@ class IncidentStore:
         except ClientError as exc:
             if exc.response["Error"]["Code"] != "ConditionalCheckFailedException":
                 raise
+
+    def claim_diagnosis(self, incident_id: str) -> str | None:
+        """Claim once, or reclaim a worker that died more than five minutes ago."""
+        claim = now_iso()
+        cutoff = (datetime.now(UTC) - timedelta(minutes=5)).isoformat(timespec="milliseconds")
+        diagnosis = Diagnosis(status="RUNNING", claimed_at=claim)
+        update = {
+            "Update": {
+                "TableName": self.table.name,
+                "Key": self.incident_key(incident_id),
+                "UpdateExpression": "SET #diagnosis = :diagnosis, #updated = :now",
+                "ConditionExpression": (
+                    "attribute_exists(pk) AND #status <> :resolved AND "
+                    "(attribute_not_exists(#diagnosis) OR "
+                    "(#diagnosis.#ds = :running AND #diagnosis.#claimed < :cutoff))"
+                ),
+                "ExpressionAttributeNames": {
+                    "#diagnosis": "diagnosis",
+                    "#ds": "status",
+                    "#claimed": "claimed_at",
+                    "#status": "status",
+                    "#updated": "updated_at",
+                },
+                "ExpressionAttributeValues": {
+                    ":diagnosis": diagnosis.model_dump(mode="json"),
+                    ":now": claim,
+                    ":resolved": Status.RESOLVED.value,
+                    ":running": "RUNNING",
+                    ":cutoff": cutoff,
+                },
+            }
+        }
+        try:
+            self._transact(
+                [
+                    update,
+                    *self._event_puts(incident_id, [("diagnosis", "AI analysis started")], "ai"),
+                ]
+            )
+        except ClientError as exc:
+            if _conditional_failure(exc):
+                return None
+            raise
+        return claim
+
+    def finish_diagnosis(
+        self, incident_id: str, claim: str, diagnosis: Diagnosis
+    ) -> Incident | None:
+        message = (
+            "AI analysis ready for review"
+            if diagnosis.status == "READY"
+            else "AI analysis unavailable"
+        )
+        update = {
+            "Update": {
+                "TableName": self.table.name,
+                "Key": self.incident_key(incident_id),
+                "UpdateExpression": "SET #diagnosis = :diagnosis, #updated = :now",
+                "ConditionExpression": "#diagnosis.#claimed = :claim AND #diagnosis.#ds = :running",
+                "ExpressionAttributeNames": {
+                    "#diagnosis": "diagnosis",
+                    "#claimed": "claimed_at",
+                    "#ds": "status",
+                    "#updated": "updated_at",
+                },
+                "ExpressionAttributeValues": {
+                    ":diagnosis": _dynamo_value(diagnosis.model_dump(mode="json")),
+                    ":now": now_iso(),
+                    ":claim": claim,
+                    ":running": "RUNNING",
+                },
+            }
+        }
+        try:
+            self._transact([update, *self._event_puts(incident_id, [("diagnosis", message)], "ai")])
+        except ClientError as exc:
+            if _conditional_failure(exc):
+                return None  # a newer worker replaced this claim
+            raise
+        return self.get(incident_id)
+
+    def change_recommendation(
+        self,
+        incident_id: str,
+        index: int,
+        action_id: str,
+        from_status: str,
+        to_status: str,
+        actor: str,
+        message: str,
+        *,
+        stale_before: str | None = None,
+    ) -> Incident:
+        """The action transition and its audit entry are a single transaction."""
+        path = f"#diagnosis.#actions[{index}]"
+        terminal = to_status in {"SUCCEEDED", "FAILED"}
+        names = {
+            "#diagnosis": "diagnosis",
+            "#actions": "recommended_actions",
+            "#id": "id",
+            "#as": "status",
+            "#actor": "decided_by",
+            "#changed": "changed_at",
+            "#updated": "updated_at",
+            **({} if terminal else {"#status": "status"}),
+        }
+        update = {
+            "Update": {
+                "TableName": self.table.name,
+                "Key": self.incident_key(incident_id),
+                "UpdateExpression": (
+                    f"SET {path}.#as = :next, {path}.#actor = :actor, "
+                    f"{path}.#changed = :now, #updated = :now"
+                ),
+                "ConditionExpression": (
+                    ("" if terminal else "#status <> :resolved AND ")
+                    + "#diagnosis.#ds = :ready AND "
+                    f"{path}.#id = :id AND {path}.#as = :previous"
+                    + (f" AND {path}.#changed < :cutoff" if stale_before else "")
+                ),
+                "ExpressionAttributeNames": names | {"#ds": "status"},
+                "ExpressionAttributeValues": {
+                    ":next": to_status,
+                    ":previous": from_status,
+                    ":actor": actor,
+                    ":now": now_iso(),
+                    ":ready": "READY",
+                    ":id": action_id,
+                    **({} if terminal else {":resolved": Status.RESOLVED.value}),
+                    **({":cutoff": stale_before} if stale_before else {}),
+                },
+            }
+        }
+        try:
+            self._transact(
+                [update, *self._event_puts(incident_id, [("remediation", message)], actor)]
+            )
+        except ClientError as exc:
+            if _conditional_failure(exc):
+                if self.get(incident_id) is None:
+                    raise NotFound(incident_id) from exc
+                raise Conflict(f"recommendation {action_id} is no longer {from_status}") from exc
+            raise
+        incident = self.get(incident_id)
+        assert incident is not None
+        return incident
 
     def get(self, incident_id: str) -> Incident | None:
         item = self.table.get_item(

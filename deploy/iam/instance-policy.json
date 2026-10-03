@@ -23,6 +23,18 @@
       ]
     },
     {
+      "Sid": "ReadIncidentEvidence",
+      "Effect": "Allow",
+      "Action": "s3:GetObject",
+      "Resource": "arn:aws:s3:::incident-evidence-ACCOUNT_ID/incidents/*"
+    },
+    {
+      "Sid": "DiagnoseWithInRegionBedrock",
+      "Effect": "Allow",
+      "Action": "bedrock:InvokeModel",
+      "Resource": "arn:aws:bedrock:us-east-2::foundation-model/openai.gpt-oss-20b-1:0"
+    },
+    {
       "Sid": "DockerShipsContainerLogs",
       "Effect": "Allow",
       "Action": ["logs:CreateLogStream", "logs:PutLogEvents"],

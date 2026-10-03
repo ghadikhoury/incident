@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { api, type FailureType, type NewIncident } from './api'
 import { DemoPanel } from './components/DemoPanel'
+import { DiagnosisPanel } from './components/DiagnosisPanel'
 import { DependencyGraph } from './components/DependencyGraph'
 import { IncidentTable } from './components/IncidentTable'
 import { ServiceList } from './components/ServiceList'
@@ -38,6 +39,7 @@ export default function App() {
   const [actor, setActor] = useState(loadActor)
   const [busy, setBusy] = useState(false)
   const [actionError, setActionError] = useState<string | null>(null)
+  const [selectedId, setSelectedId] = useState<string | null>(null)
 
   // Apply successful responses immediately, including when the live socket is offline.
   const run = async <T,>(
@@ -60,6 +62,8 @@ export default function App() {
 
   const health = systemHealth(services)
   const error = actionError ?? loadError
+  const selected = incidents.find((incident) => incident.incident_id === selectedId)
+    ?? incidents.find((incident) => incident.status !== 'RESOLVED')
 
   return (
     <div className="app">
@@ -100,6 +104,21 @@ export default function App() {
             busy={busy}
             onAcknowledge={(id) => run(() => api.acknowledge(id, actor), applyIncident)}
             onResolve={(id) => run(() => api.resolve(id, actor), applyIncident)}
+            onSelect={setSelectedId}
+          />
+          <DiagnosisPanel
+            incident={selected}
+            actor={actor}
+            busy={busy}
+            onApprove={(id, actionId) =>
+              run(() => api.decideRecommendation(id, actionId, 'approve', actor.trim()), async (incident) => {
+                applyIncident(incident)
+                await reloadServices()
+              })
+            }
+            onReject={(id, actionId) =>
+              run(() => api.decideRecommendation(id, actionId, 'reject', actor.trim()), applyIncident)
+            }
           />
           <DependencyGraph nodes={graph} services={services} />
           <ServiceList services={services} />
