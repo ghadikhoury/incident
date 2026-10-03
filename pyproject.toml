@@ -7,7 +7,7 @@ src = ["services", "backend"]
 select = ["E", "F", "I", "B", "UP"]
 
 [tool.pytest.ini_options]
-pythonpath = ["services", "backend"]
+pythonpath = ["services", "backend", "."]
 testpaths = ["services/tests", "backend/tests"]
 # importlib mode lets services/tests and backend/tests each have their own conftest.py
 addopts = "--import-mode=importlib"
