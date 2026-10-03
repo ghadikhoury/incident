@@ -1,0 +1,177 @@
+"""The alarm pipeline's durable behavior, using an in-memory DynamoDB table."""
+
+import json
+from concurrent.futures import ThreadPoolExecutor
+from datetime import UTC, datetime
+
+import pytest
+
+from incident_api.models import Status
+from incident_api.pipeline import AlarmPipeline
+
+
+class Logs:
+    def start_query(self, **kwargs):
+        return {"queryId": "query-1"}
+
+    def get_query_results(self, **kwargs):
+        return {"status": "Complete", "results": []}
+
+
+class CloudWatch:
+    def get_metric_data(self, **kwargs):
+        return {"MetricDataResults": []}
+
+    def describe_alarms(self, **kwargs):
+        return {"MetricAlarms": []}
+
+
+class S3:
+    def __init__(self):
+        self.objects = {}
+
+    def put_object(self, **kwargs):
+        self.objects[kwargs["Key"]] = json.loads(kwargs["Body"])
+
+
+class SQS:
+    def __init__(self):
+        self.messages = []
+
+    def send_message(self, **kwargs):
+        self.messages.append(json.loads(kwargs["MessageBody"]))
+
+
+class EC2:
+    state = "running"
+
+    def describe_instances(self, **kwargs):
+        return {"Reservations": [{"Instances": [{"State": {"Name": self.state}}]}]}
+
+
+def event(event_id, service="payment", signal="latency", state="ALARM", second=0):
+    return {
+        "id": event_id,
+        "source": "aws.cloudwatch",
+        "detail-type": "CloudWatch Alarm State Change",
+        "detail": {
+            "alarmName": f"incident-{service}-{signal}",
+            "state": {
+                "value": state,
+                "timestamp": datetime(2026, 10, 2, 12, 0, second, tzinfo=UTC).isoformat(),
+            },
+        },
+    }
+
+
+def pipeline(store):
+    return AlarmPipeline(
+        store,
+        Logs(),
+        CloudWatch(),
+        S3(),
+        SQS(),
+        EC2(),
+        bucket="evidence",
+        queue_url="queue",
+        instance_id="instance",
+    )
+
+
+def test_alarm_creates_evidence_timeline_and_notification(store):
+    worker = pipeline(store)
+    incident_id = worker.process(event("first"))
+    incident = store.get(incident_id)
+    assert incident.trigger == "CLOUDWATCH"
+    assert incident.service == "payment"
+    assert len(worker.s3.objects) == 3
+    assert all(
+        key.startswith(f"incidents/{incident_id}/events/first/") for key in worker.s3.objects
+    )
+    assert [entry.kind for entry in store.timeline(incident_id)] == ["alarm", "evidence"]
+    assert worker.sqs.messages == [{"incident_id": incident_id, "event_id": "first"}]
+
+
+def test_five_simultaneous_alarms_share_one_incident(store):
+    worker = pipeline(store)
+    events = [
+        event(str(i), service, signal, second=i)
+        for i, (service, signal) in enumerate(
+            [
+                ("payment", "latency"),
+                ("order", "errors"),
+                ("gateway", "health"),
+                ("inventory", "latency"),
+                ("payment", "health"),
+            ]
+        )
+    ]
+    with ThreadPoolExecutor(max_workers=5) as pool:
+        ids = list(pool.map(worker.process, events))
+    assert len(set(ids)) == 1
+    assert len(store.list_incidents()) == 1
+    assert len([entry for entry in store.timeline(ids[0]) if entry.kind == "alarm"]) == 5
+
+
+def test_retry_does_not_duplicate_incident_or_timeline(store):
+    worker = pipeline(store)
+    alarm = event("same")
+    first = worker.process(alarm)
+    assert worker.process(alarm) == first
+    assert len(store.list_incidents()) == 1
+    assert len(store.timeline(first)) == 2
+
+
+def test_sqs_failure_can_retry_without_duplicate_evidence_event(store):
+    worker = pipeline(store)
+    original_send = worker.sqs.send_message
+    calls = 0
+
+    def fail_once(**kwargs):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise RuntimeError("temporary SQS outage")
+        return original_send(**kwargs)
+
+    worker.sqs.send_message = fail_once
+    with pytest.raises(RuntimeError):
+        worker.process(event("retry"))
+    incident_id = worker.process(event("retry"))
+    assert len(store.list_incidents()) == 1
+    assert len(store.timeline(incident_id)) == 2
+    assert worker.sqs.messages == [{"incident_id": incident_id, "event_id": "retry"}]
+
+
+def test_ok_is_recorded_without_resolving(store):
+    worker = pipeline(store)
+    incident_id = worker.process(event("a"))
+    assert worker.process(event("b", state="OK", second=1)) == incident_id
+    assert store.get(incident_id).status == Status.OPEN
+    assert [entry.kind for entry in store.timeline(incident_id)] == ["alarm", "evidence", "alarm"]
+
+
+def test_late_alarm_does_not_undo_a_newer_ok(store):
+    worker = pipeline(store)
+    assert worker.process(event("recovered", state="OK", second=2)) is None
+    assert worker.process(event("late", second=1)) is None
+    assert store.list_incidents() == []
+
+
+def test_resolved_incident_is_not_reused(store):
+    worker = pipeline(store)
+    first = worker.process(event("a"))
+    store.update(first, {"status": Status.RESOLVED}, [("status", "Resolved")], "tester")
+    second = worker.process(event("b", "order", "errors", second=1))
+    assert first != second
+
+
+def test_missing_health_stream_only_alerts_while_instance_runs(store):
+    worker = pipeline(store)
+    worker.ec2.state = "stopped"
+    assert worker.process(event("stopped", signal="health", state="INSUFFICIENT_DATA")) is None
+    assert store.list_incidents() == []
+    worker.ec2.state = "running"
+    incident_id = worker.process(event("running", signal="health", state="INSUFFICIENT_DATA"))
+    assert store.get(incident_id).title.startswith("Monitoring degraded")
+    assert store.get(incident_id).status == Status.OPEN

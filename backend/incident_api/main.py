@@ -5,8 +5,11 @@ Run locally (from backend/):  uvicorn --factory incident_api.main:create_app --p
 
 import asyncio
 import contextlib
+import json
+import logging
 from contextlib import asynccontextmanager
 
+import boto3
 import httpx
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from starlette.concurrency import run_in_threadpool
@@ -25,6 +28,8 @@ from incident_api.models import (
 )
 from incident_api.store import Conflict, IncidentStore, NotFound
 
+LOG = logging.getLogger(__name__)
+
 
 def create_app(
     *,
@@ -32,6 +37,8 @@ def create_app(
     http_client: httpx.AsyncClient | None = None,
     services: tuple[config.MonitoredService, ...] = config.SERVICES,
     health_interval_s: float = config.HEALTH_INTERVAL_S,
+    queue_url: str | None = config.QUEUE_URL,
+    sqs_client=None,
 ) -> FastAPI:
     store = store or IncidentStore.from_config()
     client = http_client or httpx.AsyncClient()
@@ -46,13 +53,55 @@ def create_app(
 
     monitor = HealthMonitor(services, client, config.HEALTH_TIMEOUT_S, broadcast_services)
 
+    async def consume_updates():
+        sqs = sqs_client or boto3.Session(
+            profile_name=config.AWS_PROFILE, region_name=config.AWS_REGION
+        ).client("sqs")
+        while True:
+            try:
+                response = await asyncio.to_thread(
+                    sqs.receive_message,
+                    QueueUrl=queue_url,
+                    MaxNumberOfMessages=10,
+                    WaitTimeSeconds=10,
+                )
+                for message in response.get("Messages", []):
+                    try:
+                        incident_id = json.loads(message["Body"])["incident_id"]
+                        incident = await run_in_threadpool(store.get, incident_id)
+                        if incident is not None:
+                            await broadcast_incident(incident)
+                        await asyncio.to_thread(
+                            sqs.delete_message,
+                            QueueUrl=queue_url,
+                            ReceiptHandle=message["ReceiptHandle"],
+                        )
+                    except (ValueError, KeyError):
+                        # Remove malformed messages; retry valid messages after AWS failures.
+                        await asyncio.to_thread(
+                            sqs.delete_message,
+                            QueueUrl=queue_url,
+                            ReceiptHandle=message["ReceiptHandle"],
+                        )
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                LOG.exception("SQS incident update failed; retrying")
+                await asyncio.sleep(2)
+
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         task = asyncio.create_task(monitor.run(health_interval_s))
+        queue_task = asyncio.create_task(consume_updates()) if queue_url else None
         yield
         task.cancel()
+        if queue_task:
+            queue_task.cancel()
         with contextlib.suppress(asyncio.CancelledError):
             await task
+        if queue_task:
+            with contextlib.suppress(asyncio.CancelledError):
+                await queue_task
         if http_client is None:
             await client.aclose()
 

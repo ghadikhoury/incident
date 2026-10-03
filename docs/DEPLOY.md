@@ -184,6 +184,46 @@ Injecting `db_slow` on payment (dashboard → Simulation) flips payment's alarms
 within about 2-3 minutes, followed by order's (the cascade). Recovering returns them to `OK`
 a few minutes later.
 
+## Step 6: automatic incident pipeline
+
+From the repository root, after the table, CloudWatch log groups and alarms exist:
+
+```bash
+AWS_PROFILE=incident python deploy/setup_pipeline.py --instance-id i-08d5fddbdc352cc57
+```
+
+The script packages Linux Lambda dependencies, creates the private evidence bucket
+`incident-evidence-<account>` (30-day evidence retention), SQS queue `incident-updates`,
+Lambda role and function, and the EventBridge alarm-state rule. It updates the EC2 role
+to receive queue messages. Rerunning it updates the Lambda code and configuration.
+Use the instance ID for the current demo instance if it changes.
+
+Set `INCIDENT_QUEUE_URL` to the printed SQS URL in the instance's `/opt/incident/.env`,
+then deploy the Step 6 branch with `sudo /opt/incident/deploy/update.sh <branch>` or
+`main` after merge. A local Compose deployment can set the same variable in its `.env`.
+The backend uses long polling and broadcasts each updated incident over `/api/ws`.
+The Lambda creates one incident for alarms processed within a ten-minute window;
+Step 7 replaces that coarse grouping with dependency-aware correlation. EventBridge
+delivery can be repeated, so event IDs are stored in DynamoDB and retries reuse the
+same incident and evidence timeline entry. Resolving an incident lets the next alarm
+start a new incident. Returning to `OK` adds a timeline entry but leaves resolution to
+the engineer. A health alarm entering `INSUFFICIENT_DATA` while EC2 is running creates
+or updates a monitoring-degraded incident; while EC2 is stopped it is ignored.
+
+To verify, inject `db_slow` on the dashboard, wait for the payment CloudWatch alarm to
+enter `ALARM`, and check that a new incident appears without refreshing the page. Open
+its timeline via `/api/incidents/<id>` and find the evidence path. The bucket contains
+`event.json`, `logs.json`, and `metrics.json` under
+`incidents/<id>/events/<eventbridge-id>/`. Evidence is a snapshot taken when Lambda
+processes the alarm, so the future half of the requested five-minute window may not
+have arrived yet. Logs Insights queries are capped at 200 results per event.
+
+The Lambda's log group is `/aws/lambda/incident-processor` (14-day retention). If an
+alarm transitions but no incident appears, inspect that group, the EventBridge target,
+and the SQS queue. The queue retains messages for four days and redelivers when a
+backend broadcast fails; the initial incident API fetch covers updates missed while a
+browser was disconnected. Logs Insights scans and S3 storage add usage-based charges.
+
 **Cost and the $20 usage budget.** At list rates, 16 custom metrics are about $4.80/month.
 The eight latency/health alarms each evaluate one metric, while the four error-rate alarms
 each evaluate two: **16 alarm-metric units**, about $1.60/month before any free allowance.

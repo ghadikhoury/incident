@@ -36,6 +36,7 @@ cat > "$APP_DIR/.env" <<'EOF'
 AWS_REGION=us-east-2
 # No named profile on EC2: the backend gets credentials from the instance's IAM role.
 AWS_PROFILE=
+INCIDENT_QUEUE_URL=
 # Add the EC2 layer: ships container logs (and the metrics in them) to CloudWatch.
 COMPOSE_FILE=docker-compose.yml:docker-compose.ec2.yml
 EOF
