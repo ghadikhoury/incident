@@ -5,7 +5,7 @@
 # table/index or missing IAM permissions fail here instead of only when someone uses the UI.
 set -euo pipefail
 
-API="http://127.0.0.1:3000/api"
+API="${API_URL:-http://127.0.0.1:3000/api}"  # API_URL: check a different deployment
 
 curl -fsS "$API/health" >/dev/null
 
