@@ -56,6 +56,7 @@ def _package():
                 "cp",
                 "--only-binary=:all:",
                 "pydantic==2.13.5",
+                "PyYAML==6.0.3",
             ],
             check=True,
         )
@@ -65,7 +66,16 @@ def _package():
             for path in sorted(target.rglob("*")):
                 if path.is_file() and "__pycache__" not in path.parts:
                     bundle.write(path, path.relative_to(target).as_posix())
-            for name in ("__init__.py", "config.py", "models.py", "store.py", "pipeline.py"):
+            for name in (
+                "__init__.py",
+                "config.py",
+                "models.py",
+                "store.py",
+                "pipeline.py",
+                "dependency.py",
+                "correlation.py",
+                "services.yaml",
+            ):
                 bundle.write(source / name, f"incident_api/{name}")
         return archive.getvalue()
 

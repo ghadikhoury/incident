@@ -19,6 +19,29 @@ export interface Incident {
   created_at: string
   updated_at: string
   resolved_at: string | null
+  alerts?: Alert[]
+  probable_root?: string | null
+  downstream_services?: string[]
+  correlation_label?: string | null
+  severity_reason?: string | null
+}
+
+export interface Alert {
+  alarm_name: string
+  service: string
+  signal: 'health' | 'errors' | 'latency'
+  state: 'ALARM' | 'OK' | 'INSUFFICIENT_DATA'
+  first_at: string
+  last_at: string
+  observed_value: number | null
+  threshold: number | null
+}
+
+export interface ServiceNode {
+  name: string
+  display_name: string
+  depends_on: string[]
+  monitored: boolean
 }
 
 export interface Chaos {
@@ -73,6 +96,7 @@ const actorBody = (actor: string) => ({ actor: actor || undefined })
 
 export const api = {
   services: () => request<ServiceHealth[]>('GET', '/api/services'),
+  serviceGraph: () => request<ServiceNode[]>('GET', '/api/services/graph'),
   incidents: () => request<Incident[]>('GET', '/api/incidents'),
   createIncident: (incident: NewIncident) => request<Incident>('POST', '/api/incidents', incident),
   acknowledge: (id: string, actor: string) =>

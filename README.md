@@ -28,7 +28,7 @@ services (Docker on EC2) ──logs/metrics──▶ CloudWatch ──alarm─�
 4. [x] Deploy to EC2
 5. [x] CloudWatch detection
 6. [x] Lambda incident pipeline (DynamoDB, S3, SQS)
-7. [ ] Dependency graph, correlation, severity
+7. [x] Dependency graph, correlation, severity
 8. [ ] AI diagnosis (Bedrock) + human approval
 9. [ ] Incident detail page + evaluation harness
 10. [ ] Infrastructure as code (CDK), hardening, docs

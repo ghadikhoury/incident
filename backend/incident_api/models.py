@@ -1,4 +1,5 @@
 from enum import StrEnum
+from typing import Literal
 
 from pydantic import BaseModel, Field
 
@@ -18,6 +19,17 @@ class Status(StrEnum):
     RESOLVED = "RESOLVED"
 
 
+class Alert(BaseModel):
+    alarm_name: str
+    service: str
+    signal: Literal["health", "errors", "latency"]
+    state: Literal["ALARM", "OK", "INSUFFICIENT_DATA"]
+    first_at: str
+    last_at: str
+    observed_value: float | None = None
+    threshold: float | None = None
+
+
 class Incident(BaseModel):
     incident_id: str
     title: str
@@ -30,6 +42,11 @@ class Incident(BaseModel):
     created_at: str
     updated_at: str
     resolved_at: str | None = None
+    alerts: list[Alert] = Field(default_factory=list)
+    probable_root: str | None = None
+    downstream_services: list[str] = Field(default_factory=list)
+    correlation_label: str | None = None
+    severity_reason: str | None = None
 
 
 class TimelineEvent(BaseModel):

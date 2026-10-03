@@ -15,6 +15,7 @@ from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from starlette.concurrency import run_in_threadpool
 
 from incident_api import config, simulation
+from incident_api.dependency import GRAPH
 from incident_api.health import HealthMonitor, ServiceHealth
 from incident_api.hub import Hub
 from incident_api.models import (
@@ -132,6 +133,22 @@ def create_app(
     @app.get("/api/services")
     def list_services() -> list[ServiceHealth]:
         return monitor.current()
+
+    @app.get("/api/services/graph")
+    def service_graph() -> list[dict]:
+        return GRAPH.as_api()
+
+    @app.get("/api/services/{service_id}/dependencies")
+    def service_dependencies(service_id: str) -> dict:
+        if service_id not in GRAPH.nodes:
+            raise HTTPException(404, f"unknown service {service_id}")
+        node = GRAPH.nodes[service_id]
+        return {
+            "service": service_id,
+            "direct": list(node.depends_on),
+            "transitive": sorted(GRAPH.dependencies(service_id)),
+            "dependents": sorted(GRAPH.dependents(service_id)),
+        }
 
     @app.get("/api/incidents")
     async def list_incidents(active: bool = False) -> list[Incident]:

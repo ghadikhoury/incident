@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { api, type FailureType, type NewIncident } from './api'
 import { DemoPanel } from './components/DemoPanel'
+import { DependencyGraph } from './components/DependencyGraph'
 import { IncidentTable } from './components/IncidentTable'
 import { ServiceList } from './components/ServiceList'
 import { systemHealth } from './logic'
@@ -32,7 +33,7 @@ function saveActor(actor: string) {
 }
 
 export default function App() {
-  const { services, incidents, connection, loadError, applyIncident, reloadServices } = useLiveData()
+  const { services, graph, incidents, connection, loadError, applyIncident, reloadServices } = useLiveData()
   const now = useNow()
   const [actor, setActor] = useState(loadActor)
   const [busy, setBusy] = useState(false)
@@ -100,6 +101,7 @@ export default function App() {
             onAcknowledge={(id) => run(() => api.acknowledge(id, actor), applyIncident)}
             onResolve={(id) => run(() => api.resolve(id, actor), applyIncident)}
           />
+          <DependencyGraph nodes={graph} services={services} />
           <ServiceList services={services} />
         </div>
         <DemoPanel

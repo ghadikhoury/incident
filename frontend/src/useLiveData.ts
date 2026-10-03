@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react'
-import { api, liveUrl, type Incident, type LiveMessage, type ServiceHealth } from './api'
+import { api, liveUrl, type Incident, type LiveMessage, type ServiceHealth, type ServiceNode } from './api'
 import { mergeIncidents, upsertIncident } from './logic'
 
 export type Connection = 'connecting' | 'live' | 'offline'
@@ -12,10 +12,12 @@ const MAX_RETRY_MS = 10_000
  */
 export function useLiveData() {
   const [services, setServices] = useState<ServiceHealth[]>([])
+  const [graph, setGraph] = useState<ServiceNode[]>([])
   const [incidents, setIncidents] = useState<Incident[]>([])
   const [connection, setConnection] = useState<Connection>('connecting')
   const [incidentError, setIncidentError] = useState<string | null>(null)
   const [serviceError, setServiceError] = useState<string | null>(null)
+  const [graphError, setGraphError] = useState<string | null>(null)
 
   const reloadIncidents = useCallback(async () => {
     try {
@@ -36,6 +38,15 @@ export function useLiveData() {
     }
   }, [])
 
+  const reloadGraph = useCallback(async () => {
+    try {
+      setGraph(await api.serviceGraph())
+      setGraphError(null)
+    } catch (error) {
+      setGraphError(`Could not load dependency graph: ${(error as Error).message}`)
+    }
+  }, [])
+
   const applyIncident = useCallback((incident: Incident) => {
     setIncidents((current) => upsertIncident(current, incident))
   }, [])
@@ -50,6 +61,7 @@ export function useLiveData() {
       if (stopped) return
       void reloadIncidents()
       void reloadServices()
+      void reloadGraph()
     })
 
     const connect = () => {
@@ -59,6 +71,7 @@ export function useLiveData() {
         setConnection('live')
         void reloadIncidents()
         void reloadServices()
+        void reloadGraph()
       }
       socket.onmessage = (event) => {
         const message = JSON.parse(event.data) as LiveMessage
@@ -80,13 +93,14 @@ export function useLiveData() {
       window.clearTimeout(retryTimer)
       socket?.close()
     }
-  }, [reloadIncidents, reloadServices])
+  }, [reloadIncidents, reloadServices, reloadGraph])
 
   return {
     services,
+    graph,
     incidents,
     connection,
-    loadError: incidentError ?? serviceError,
+    loadError: incidentError ?? serviceError ?? graphError,
     applyIncident,
     reloadServices,
   }

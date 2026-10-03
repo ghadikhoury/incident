@@ -1,0 +1,25 @@
+services:
+  gateway:
+    display_name: Gateway
+    depends_on: [order]
+    baseline_latency_ms: 30
+    monitored: true
+  order:
+    display_name: Orders
+    depends_on: [payment, inventory]
+    baseline_latency_ms: 25
+    monitored: true
+  payment:
+    display_name: Payments
+    depends_on: [postgres]
+    baseline_latency_ms: 15
+    monitored: true
+  inventory:
+    display_name: Inventory
+    depends_on: []
+    baseline_latency_ms: 15
+    monitored: true
+  postgres:
+    display_name: PostgreSQL
+    depends_on: []
+    monitored: false

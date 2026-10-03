@@ -41,7 +41,8 @@ export function IncidentTable({ incidents, now, busy, onAcknowledge, onResolve }
                 <th>Sev</th>
                 <th>ID</th>
                 <th>Title</th>
-                <th>Service</th>
+                <th>Root / service</th>
+                <th>Alerts</th>
                 <th>Status</th>
                 <th>Owner</th>
                 <th>Age</th>
@@ -53,10 +54,39 @@ export function IncidentTable({ incidents, now, busy, onAcknowledge, onResolve }
                 <tr key={incident.incident_id}>
                   <td>
                     <span className={`sev sev--${incident.severity}`}>{incident.severity}</span>
+                    {incident.severity_reason && (
+                      <small className="severity-reason">{incident.severity_reason}</small>
+                    )}
                   </td>
                   <td className="mono">{incident.incident_id}</td>
-                  <td>{incident.title}</td>
-                  <td>{incident.service}</td>
+                  <td>
+                    {incident.title}
+                    {incident.correlation_label && (
+                      <span className="cascade-label">{incident.correlation_label}</span>
+                    )}
+                  </td>
+                  <td>
+                    {incident.probable_root ?? incident.service}
+                    {!!incident.downstream_services?.length && (
+                      <small className="downstream">Downstream: {incident.downstream_services.join(', ')}</small>
+                    )}
+                  </td>
+                  <td>
+                    {incident.alerts?.length ? (
+                      <details className="alert-details">
+                        <summary>{incident.alerts.length} alerts</summary>
+                        <ul>
+                          {incident.alerts.map((alert) => (
+                            <li key={alert.alarm_name}>
+                              {alert.service} {alert.signal}: {alert.state}
+                            </li>
+                          ))}
+                        </ul>
+                      </details>
+                    ) : (
+                      '0'
+                    )}
+                  </td>
                   <td>
                     <span className={`status status--${incident.status}`}>{incident.status}</span>
                   </td>

@@ -3,6 +3,8 @@
 import os
 from dataclasses import dataclass
 
+from incident_api.dependency import GRAPH
+
 TABLE_NAME = os.getenv("INCIDENT_TABLE", "incident-store")
 AWS_REGION = os.getenv("AWS_REGION", "us-east-2")
 # Named AWS profile for local development (e.g. "incident" from `aws login`). When unset,
@@ -23,20 +25,19 @@ class MonitoredService:
 
 # The simulated company. Defaults match the ports published by docker-compose.yml;
 # inside compose the backend overrides them with container hostnames.
-SERVICES = (
+_SERVICE_URLS = {
+    "gateway": ("GATEWAY_URL", "http://localhost:8090"),
+    "order": ("ORDER_URL", "http://localhost:8091"),
+    "payment": ("PAYMENT_URL", "http://localhost:8092"),
+    "inventory": ("INVENTORY_URL", "http://localhost:8093"),
+}
+SERVICES = tuple(
     MonitoredService(
-        "gateway", "Gateway", os.getenv("GATEWAY_URL", "http://localhost:8090"), ("order",)
-    ),
-    MonitoredService(
-        "order",
-        "Orders",
-        os.getenv("ORDER_URL", "http://localhost:8091"),
-        ("inventory", "payment"),
-    ),
-    MonitoredService(
-        "payment", "Payments", os.getenv("PAYMENT_URL", "http://localhost:8092"), ("postgres",)
-    ),
-    MonitoredService(
-        "inventory", "Inventory", os.getenv("INVENTORY_URL", "http://localhost:8093"), ()
-    ),
+        node.name,
+        node.display_name,
+        os.getenv(*_SERVICE_URLS[node.name]),
+        node.depends_on,
+    )
+    for node in GRAPH.nodes.values()
+    if node.monitored
 )

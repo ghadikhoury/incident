@@ -10,7 +10,9 @@ import boto3
 from botocore.exceptions import ClientError
 
 from incident_api import config
-from incident_api.models import IncidentCreate, Status
+from incident_api.correlation import alert_from_event, analyze, compatible, upsert_alert
+from incident_api.dependency import GRAPH
+from incident_api.models import Alert, IncidentCreate, Status
 from incident_api.store import IncidentStore
 
 LOG = logging.getLogger(__name__)
@@ -125,7 +127,7 @@ class AlarmPipeline:
         if marker:
             incident_id = marker.get("incident_id")
         else:
-            incident_id = self._record(event_id, name, service, state, when)
+            incident_id = self._record(event_id, name, service, state, when, event)
         if incident_id is None:
             return None
         self._notify(incident_id, event_id)
@@ -167,11 +169,11 @@ class AlarmPipeline:
         )
 
     def _record(
-        self, event_id: str, name: str, service: str, state: str, when: datetime
+        self, event_id: str, name: str, service: str, state: str, when: datetime, event: dict
     ) -> str | None:
         table = self.store.table
         ts = when.isoformat(timespec="milliseconds")
-        is_problem = state != "OK"
+        incoming = alert_from_event(name, service, state, when, event)
         for attempt in range(8):
             marker = self.store.alarm_marker(event_id)
             if marker:
@@ -181,37 +183,49 @@ class AlarmPipeline:
             ).get("Item")
             if alarm and alarm["state_at"] >= ts:
                 return None  # stale transition; newer state already recorded
+            index = table.get_item(Key={"pk": "PIPELINE", "sk": "ACTIVE"}, ConsistentRead=True).get(
+                "Item"
+            )
+            claims = self._claims(index)
+            create_actions = []
+            analysis_action = None
+            index_action = None
             if state == "OK":
                 incident_id = alarm.get("incident_id") if alarm else None
-                create = False
+                incident = self.store.get(incident_id) if incident_id else None
+                prior_alerts = self._alerts(incident) if incident else []
+                if (
+                    incident
+                    and incident.status != Status.RESOLVED
+                    and any(alert.alarm_name == name for alert in prior_alerts)
+                ):
+                    analysis = analyze(upsert_alert(prior_alerts, incoming), GRAPH)
+                    analysis_action = self.store.correlation_update_action(incident, analysis)
+                    index_action = self._index_action(index, claims)
             else:
-                lock = table.get_item(
-                    Key={"pk": "PIPELINE", "sk": "ACTIVE"}, ConsistentRead=True
-                ).get("Item")
-                now = int(time.time())
-                active = (
-                    self.store.get(lock["incident_id"])
-                    if lock and lock["expires_at"] > now
-                    else None
-                )
-                create = active is None or active.status == Status.RESOLVED
-                if create:
+                incident = self._candidate(claims, service, when)
+                if incident is None:
                     title = (
                         f"{service} {name.rsplit('-', 1)[-1]} alarm"
                         if state == "ALARM"
                         else f"Monitoring degraded: {service}"
                     )
+                    analysis = analyze([incoming], GRAPH)
                     incident, create_actions = self.store.automatic_incident_actions(
                         IncidentCreate(
                             title=title,
                             service=service,
                             trigger="CLOUDWATCH",
                             summary=f"{name} entered {state}",
-                        )
+                        ),
+                        analysis,
                     )
-                    incident_id = incident.incident_id
                 else:
-                    incident_id = active.incident_id
+                    analysis = analyze(upsert_alert(self._alerts(incident), incoming), GRAPH)
+                    analysis_action = self.store.correlation_update_action(incident, analysis)
+                incident_id = incident.incident_id
+                claims[service] = {"incident_id": incident_id, "last_at": ts}
+                index_action = self._index_action(index, claims)
             marker_item = {
                 **self.store.alarm_marker_key(event_id),
                 "incident_id": incident_id,
@@ -225,56 +239,11 @@ class AlarmPipeline:
                     }
                 }
             ]
-            if is_problem:
-                if create:
-                    transaction.extend(create_actions)
-                    lock_condition = "attribute_not_exists(pk) OR expires_at <= :now"
-                    lock_values = {":now": now}
-                    if lock:
-                        lock_condition += " OR incident_id = :previous"
-                        lock_values[":previous"] = lock["incident_id"]
-                    transaction.append(
-                        {
-                            "Put": {
-                                "TableName": table.name,
-                                "Item": {
-                                    "pk": "PIPELINE",
-                                    "sk": "ACTIVE",
-                                    "incident_id": incident_id,
-                                    "expires_at": now + WINDOW_SECONDS,
-                                },
-                                "ConditionExpression": lock_condition,
-                                "ExpressionAttributeValues": lock_values,
-                            }
-                        }
-                    )
-                else:
-                    transaction.append(
-                        {
-                            "Update": {
-                                "TableName": table.name,
-                                "Key": {"pk": "PIPELINE", "sk": "ACTIVE"},
-                                "UpdateExpression": "SET expires_at = :next",
-                                "ConditionExpression": "incident_id = :id AND expires_at > :now",
-                                "ExpressionAttributeValues": {
-                                    ":id": incident_id,
-                                    ":now": now,
-                                    ":next": now + WINDOW_SECONDS,
-                                },
-                            }
-                        }
-                    )
-                    transaction.append(
-                        {
-                            "ConditionCheck": {
-                                "TableName": table.name,
-                                "Key": self.store.incident_key(incident_id),
-                                "ConditionExpression": "#status <> :resolved",
-                                "ExpressionAttributeNames": {"#status": "status"},
-                                "ExpressionAttributeValues": {":resolved": Status.RESOLVED.value},
-                            }
-                        }
-                    )
+            transaction.extend(create_actions)
+            if analysis_action:
+                transaction.append(analysis_action)
+            if index_action:
+                transaction.append(index_action)
             transaction.append(
                 {
                     "Update": {
@@ -309,6 +278,84 @@ class AlarmPipeline:
                     raise
                 time.sleep(0.025 * (attempt + 1))
         return None
+
+    @staticmethod
+    def _alerts(incident) -> list[Alert]:
+        if incident.alerts or incident.trigger != "CLOUDWATCH" or not incident.summary:
+            return incident.alerts
+        # Incidents created by Step 6 have no alert list. Preserve their first
+        # observed service when a new alarm joins during the rollout.
+        parts = incident.summary.split(" entered ", 1)
+        if len(parts) != 2 or parts[1] not in {"ALARM", "INSUFFICIENT_DATA"}:
+            return []
+        name = parts[0]
+        if name not in {f"incident-{incident.service}-{signal}" for signal in SIGNALS}:
+            return []
+        return [
+            Alert(
+                alarm_name=name,
+                service=incident.service,
+                signal=name.rsplit("-", 1)[-1],
+                state=parts[1],
+                first_at=incident.created_at,
+                last_at=incident.created_at,
+            )
+        ]
+
+    def _claims(self, index: dict | None) -> dict:
+        claims = dict(index.get("claims", {})) if index else {}
+        if index and "incident_id" in index and index.get("expires_at", 0) > time.time():
+            # Preserve an in-progress Step 6 incident during the schema transition.
+            incident = self.store.get(index["incident_id"])
+            if incident and incident.status != Status.RESOLVED:
+                claims.setdefault(
+                    incident.service,
+                    {"incident_id": incident.incident_id, "last_at": incident.updated_at},
+                )
+        return claims
+
+    def _candidate(self, claims: dict, service: str, when: datetime):
+        possibilities = []
+        gaps = {}
+        for other_service, claim in claims.items():
+            if not GRAPH.related(service, other_service):
+                continue
+            incident_id = claim["incident_id"]
+            try:
+                gap = abs((when - datetime.fromisoformat(claim["last_at"])).total_seconds())
+            except (TypeError, ValueError):
+                continue
+            if gap > WINDOW_SECONDS:
+                continue
+            gaps[incident_id] = min(gaps.get(incident_id, float("inf")), gap)
+        for incident_id, gap in gaps.items():
+            incident = self.store.get(incident_id)
+            if (
+                incident
+                and incident.status != Status.RESOLVED
+                and compatible(GRAPH, service, self._alerts(incident))
+            ):
+                possibilities.append((gap, incident.created_at, incident))
+        return min(possibilities, key=lambda item: (item[0], item[1]))[2] if possibilities else None
+
+    def _index_action(self, previous: dict | None, claims: dict) -> dict:
+        item = {
+            "pk": "PIPELINE",
+            "sk": "ACTIVE",
+            "version": (int(previous.get("version", 0)) if previous else 0) + 1,
+            "claims": claims,
+        }
+        action = {"TableName": self.store.table.name, "Item": item}
+        if previous is None:
+            action["ConditionExpression"] = "attribute_not_exists(pk)"
+        elif "version" not in previous:
+            action["ConditionExpression"] = "attribute_not_exists(#version)"
+            action["ExpressionAttributeNames"] = {"#version": "version"}
+        else:
+            action["ConditionExpression"] = "#version = :previous"
+            action["ExpressionAttributeNames"] = {"#version": "version"}
+            action["ExpressionAttributeValues"] = {":previous": previous["version"]}
+        return {"Put": action}
 
     def _capture(
         self,

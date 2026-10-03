@@ -266,6 +266,49 @@ button.danger {
   font-size: 12px;
 }
 
+.dependency-panel svg {
+  width: 100%;
+  height: auto;
+  color: var(--muted);
+}
+
+.dependency-panel p {
+  margin: -4px 0 12px;
+  font-size: 12px;
+}
+
+.dependency-edge {
+  stroke: var(--muted);
+  stroke-width: 2;
+}
+
+.dependency-node rect {
+  fill: #1f252d;
+  stroke: var(--border);
+  stroke-width: 2;
+}
+
+.dependency-node--healthy rect { stroke: var(--green); }
+.dependency-node--unhealthy rect,
+.dependency-node--down rect { stroke: var(--red); }
+.dependency-node text { fill: var(--text); font-size: 14px; font-weight: 600; }
+.dependency-node .dependency-node__status { fill: var(--muted); font-size: 11px; font-weight: 400; }
+
+.cascade-label,
+.downstream,
+.severity-reason {
+  display: block;
+  margin-top: 4px;
+  font-size: 11px;
+}
+
+.cascade-label { color: var(--yellow); font-weight: 700; }
+.downstream { color: var(--muted); }
+.severity-reason { color: var(--muted); max-width: 180px; white-space: normal; }
+.alert-details summary { cursor: pointer; }
+.alert-details ul { margin: 6px 0 0; padding-left: 16px; }
+.alert-details li { margin-top: 3px; }
+
 .pill {
   font-size: 12px;
   padding: 2px 8px;
