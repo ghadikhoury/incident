@@ -79,10 +79,10 @@ async def apply(ctx: RequestContext) -> JSONResponse | None:
 
 
 def _burn_cpu(milliseconds: int) -> None:
-    """Bounded CPU work off the event loop; reset is effective on the next request."""
+    """Bounded CPU work that stops promptly when the injected setting is cleared."""
     until = time.perf_counter() + milliseconds / 1000
     value = 1
-    while time.perf_counter() < until:
+    while state.cpu_ms == milliseconds and time.perf_counter() < until:
         value = (value * 1664525 + 1013904223) & 0xFFFFFFFF
 
 
@@ -95,11 +95,11 @@ def router(supports_db_delay: bool) -> APIRouter:
     log = get_logger()
 
     @r.get("/chaos")
-    def get_chaos():
+    async def get_chaos():
         return asdict(state)
 
     @r.post("/chaos")
-    def set_chaos(body: ChaosIn, background: BackgroundTasks):
+    async def set_chaos(body: ChaosIn, background: BackgroundTasks):
         global _intermittent_started
         if body.db_delay_s is not None and not supports_db_delay:
             raise ServiceError(400, "UnsupportedChaos", "this service has no database")
@@ -123,7 +123,7 @@ def router(supports_db_delay: bool) -> APIRouter:
         return asdict(state)
 
     @r.delete("/chaos")
-    def reset_chaos():
+    async def reset_chaos():
         global _intermittent_started
         state.latency_ms, state.error_rate, state.db_delay_s = 0, 0.0, 0.0
         state.intermittent_on_s, state.intermittent_off_s = 0, 0

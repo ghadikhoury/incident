@@ -1,3 +1,4 @@
+import threading
 import time
 
 import pytest
@@ -109,6 +110,34 @@ def test_cpu_work_is_bounded_and_clears():
     assert time.perf_counter() - start >= 0.025
     client.delete("/chaos")
     assert client.get("/chaos").json()["cpu_ms"] == 0
+
+
+def test_queued_cpu_work_stops_after_reset():
+    start = time.perf_counter()
+    chaos._burn_cpu(5000)
+    assert time.perf_counter() - start < 0.1
+
+
+def test_running_cpu_work_stops_after_reset():
+    chaos.state.cpu_ms = 5000
+    started = threading.Event()
+    stopped = threading.Event()
+
+    def run():
+        started.set()
+        chaos._burn_cpu(5000)
+        stopped.set()
+
+    worker = threading.Thread(target=run)
+    worker.start()
+    try:
+        assert started.wait(1)
+        time.sleep(0.05)
+        chaos.state.cpu_ms = 0
+        assert stopped.wait(1)
+    finally:
+        chaos.state.cpu_ms = 0
+        worker.join(timeout=1)
 
 
 def test_crash_exits_process_after_responding(monkeypatch):

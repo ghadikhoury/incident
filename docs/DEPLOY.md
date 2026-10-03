@@ -328,6 +328,7 @@ also emits measured process CPU utilization every 10 seconds, so a CPU diagnosis
 cite a real signal rather than injection settings. A crashed
 service cannot answer `/chaos`; restart its container with `sudo docker compose start
 <service>` from `/opt/incident`, then clear any remaining chaos settings if needed.
+Clearing the CPU setting also stops work already queued in worker threads.
 
 The evaluation runner uses only the backend's localhost API and standard Python. Run it
 on EC2 from `/opt/incident` when all services are healthy and no incident is active:
