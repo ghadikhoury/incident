@@ -18,3 +18,15 @@ it('draws the configured dependencies and unmonitored database', () => {
   expect(screen.getByText('PostgreSQL')).toBeTruthy()
   expect(container.querySelectorAll('line.dependency-edge')).toHaveLength(2)
 })
+
+it('marks services with incident alarms even when their health probes pass', () => {
+  const nodes: ServiceNode[] = [
+    { name: 'inventory', display_name: 'Inventory', depends_on: [], monitored: true },
+  ]
+  const { container } = render(<DependencyGraph nodes={nodes} services={[
+    { name: 'inventory', display_name: 'Inventory', status: 'healthy', depends_on: [],
+      error: null, response_ms: 5, chaos: null, checked_at: '2026-10-03T00:00:00Z' },
+  ]} alertedServices={new Set(['inventory'])} />)
+  expect(screen.getByText('alarm active')).toBeTruthy()
+  expect(container.querySelector('.dependency-node--alarm')).toBeTruthy()
+})

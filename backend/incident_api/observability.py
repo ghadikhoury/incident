@@ -137,12 +137,10 @@ class IncidentTelemetry:
                 if fingerprint not in seen:
                     seen.add(fingerprint)
                     rows.append(item)
-                    if len(rows) >= MAX_LOG_ROWS:
-                        break
-            if len(rows) >= MAX_LOG_ROWS:
-                break
-        rows.sort(key=lambda row: row.get("@timestamp", ""))
-        return {"source": "saved CloudWatch error/warning excerpts", "rows": rows}
+        # Evidence may include a burst of older, unrelated errors. Keep the
+        # newest excerpts visible when the detail page caps its displayed rows.
+        rows.sort(key=lambda row: row.get("@timestamp", ""), reverse=True)
+        return {"source": "saved CloudWatch error/warning excerpts", "rows": rows[:MAX_LOG_ROWS]}
 
     def search_logs(self, incident: Incident, search: str) -> dict:
         """Search the full bounded incident window, with the search term as a literal."""

@@ -105,6 +105,11 @@ def test_incident_endpoints_return_saved_excerpts_and_reject_untrusted_prefix(st
                 "service": "payment",
                 "error_type": "PoolTimeout",
             },
+            {
+                "@timestamp": "2026-10-03T00:01:00Z",
+                "service": "payment",
+                "error_type": "ConnectionError",
+            },
             {"message": "chaos updated", "db_delay_s": 3},
         ]
     }
@@ -133,7 +138,12 @@ def test_incident_endpoints_return_saved_excerpts_and_reject_untrusted_prefix(st
         assert client.get("/api/incidents/INC-9999/logs").status_code == 404
     assert logs.status_code == 200
     assert logs.json()["rows"] == [
-        {"@timestamp": "2026-10-03T00:00:00Z", "service": "payment", "error_type": "PoolTimeout"}
+        {
+            "@timestamp": "2026-10-03T00:01:00Z",
+            "service": "payment",
+            "error_type": "ConnectionError",
+        },
+        {"@timestamp": "2026-10-03T00:00:00Z", "service": "payment", "error_type": "PoolTimeout"},
     ]
     assert s3.reads == [{"Bucket": "evidence", "Key": key}]
     assert metrics.status_code == 200

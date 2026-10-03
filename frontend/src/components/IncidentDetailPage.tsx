@@ -217,7 +217,8 @@ export function IncidentDetailPage({ incident, graph, services, actor, busy, onB
             {alert.threshold != null && ` / threshold ${alert.threshold}`}
           </li>)}</ul>
         </section>
-        <DependencyGraph nodes={graph} services={services} />
+        <DependencyGraph nodes={graph} services={services}
+          alertedServices={new Set(current.alerts?.filter((alert) => alert.state === 'ALARM').map((alert) => alert.service))} />
       </div>
 
       <DiagnosisPanel incident={current} actor={actor} busy={busy} onApprove={onApprove} onReject={onReject} onRetry={onRetry} />

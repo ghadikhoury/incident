@@ -290,7 +290,8 @@ button.danger {
 
 .dependency-node--healthy rect { stroke: var(--green); }
 .dependency-node--unhealthy rect,
-.dependency-node--down rect { stroke: var(--red); }
+.dependency-node--down rect,
+.dependency-node--alarm rect { stroke: var(--red); }
 .dependency-node text { fill: var(--text); font-size: 14px; font-weight: 600; }
 .dependency-node .dependency-node__status { fill: var(--muted); font-size: 11px; font-weight: 400; }
 
