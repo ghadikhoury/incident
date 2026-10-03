@@ -21,6 +21,15 @@ Incident is meant to be a genuine, usable product (startup-style), built on AWS 
 - [x] Budget `incident-monthly-20`: $20/month, counts usage *before* credits, emails at 50/80/100% actual + 100% forecast
 - [x] PR #1 merged, branch protection on `main` (CI must pass)
 
+**Step 2: done ✅** (PRs #2, #3): simulated shop, structured logs + trace ids, `/chaos` failure injection, load generator, integration tests for the slow-database and outage scenarios.
+
+**Step 3: done ✅** (PRs #4, #5): Incident backend on DynamoDB (`incident-store`, transactional updates, sparse active index), health monitor, WebSocket, React dashboard.
+
+**Step 4: in review**: EC2 deployment, see [DEPLOY.md](DEPLOY.md).
+- [x] Instance `incident` (t3.small, Ubuntu 24.04) running the full stack; only SSH is open (from your IP), the dashboard is reached through an SSH tunnel
+- [x] IAM role `incident-ec2`: DynamoDB `incident-store` only (verified: everything else is denied)
+- [x] Survives stop/start (boot service); **stop it when not in use**
+
 ---
 
 ## What everything is (plain-English glossary)
@@ -130,10 +139,10 @@ Each step = one branch + one PR. For each step Claude explains what we're doing,
 - **Done when:** clicking "Inject db_slow" turns Payment red within seconds, and a manually created incident appears on the dashboard without refreshing.
 
 ### Step 4: Deploy to EC2
-- Launch a `t3.medium` Ubuntu instance. Learn **security groups** (firewall: allow SSH only from your IP and the dashboard port), key pairs, SSH, and installing Docker on Linux.
+- Launch a `t3.small` Ubuntu instance (Free-Plan accounts can only launch Free Tier-eligible types; `t3.medium` isn't one). Learn **security groups** (firewall: only SSH, only from your IP), key pairs, SSH (including an SSH tunnel to reach the dashboard, which has no login yet), and installing Docker on Linux.
 - Attach an **IAM instance role** to the instance, so it gets AWS permissions without any keys stored on the server.
 - `git clone` and `docker compose up -d` on EC2.
-- Habit: **stop the instance when you're done working** (about $0.04/hr while running, paid from credits).
+- Habit: **stop the instance when you're done working** (about $0.02/hr while running, paid from credits).
 - **Done when:** the dashboard loads from the EC2 public address in your browser.
 
 ### Step 5: CloudWatch detection

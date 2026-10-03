@@ -19,6 +19,8 @@ jobs:
       - run: pip install -r requirements-dev.txt
       - name: Lint
         run: ruff check . && ruff format --check .
+      - name: Lint deploy scripts
+        run: shellcheck deploy/*.sh
       - name: Test
         run: pytest
 

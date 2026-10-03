@@ -83,6 +83,8 @@ services:
       start_period: 10s
 
   # The dashboard: http://localhost:3000 (nginx serves the React build and proxies /api).
+  # Only ever bound to 127.0.0.1: the API behind it has no authentication yet, so on EC2
+  # it is reached through an SSH tunnel (see docs/DEPLOY.md), never a public port.
   frontend:
     build: ./frontend
     ports: ["127.0.0.1:3000:80"]
