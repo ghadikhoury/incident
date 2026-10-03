@@ -41,7 +41,7 @@ it('separates observed signals from AI inference and requires a named decision',
   const approve = vi.fn()
   const reject = vi.fn()
   const { rerender } = render(
-    <DiagnosisPanel incident={incident} actor="" busy={false} onApprove={approve} onReject={reject} />,
+    <DiagnosisPanel incident={incident} actor="" busy={false} onApprove={approve} onReject={reject} onRetry={() => {}} />,
   )
   expect(screen.getByText('Observed facts')).toBeTruthy()
   expect(screen.getByText('AI inference')).toBeTruthy()
@@ -49,7 +49,7 @@ it('separates observed signals from AI inference and requires a named decision',
   expect(screen.getByText('Payment connection-pool exhaustion')).toBeTruthy()
   expect((screen.getByRole('button', { name: 'Approve and run' }) as HTMLButtonElement).disabled).toBe(true)
   rerender(
-    <DiagnosisPanel incident={incident} actor="alice" busy={false} onApprove={approve} onReject={reject} />,
+    <DiagnosisPanel incident={incident} actor="alice" busy={false} onApprove={approve} onReject={reject} onRetry={() => {}} />,
   )
   fireEvent.click(screen.getByRole('button', { name: 'Reject' }))
   expect(reject).toHaveBeenCalledWith('INC-1008', 'clear_chaos:payment')
@@ -57,11 +57,14 @@ it('separates observed signals from AI inference and requires a named decision',
 })
 
 it('shows unavailable analysis without blocking incident facts', () => {
+  const retry = vi.fn()
   render(
     <DiagnosisPanel incident={{ ...incident, diagnosis: { ...incident.diagnosis!, status: 'UNAVAILABLE' } }}
-      actor="alice" busy={false} onApprove={() => {}} onReject={() => {}} />,
+      actor="alice" busy={false} onApprove={() => {}} onReject={() => {}} onRetry={retry} />,
   )
   expect(screen.getByText('AI analysis unavailable.')).toBeTruthy()
   expect(screen.getByText(/observed 3000/)).toBeTruthy()
   expect(screen.queryByRole('button', { name: 'Approve and run' })).toBeNull()
+  fireEvent.click(screen.getByRole('button', { name: 'Retry analysis' }))
+  expect(retry).toHaveBeenCalledWith('INC-1008')
 })

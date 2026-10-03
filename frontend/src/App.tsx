@@ -119,6 +119,9 @@ export default function App() {
             onReject={(id, actionId) =>
               run(() => api.decideRecommendation(id, actionId, 'reject', actor.trim()), applyIncident)
             }
+            onRetry={(id) =>
+              run(() => api.retryDiagnosis(id, actor.trim()), applyIncident)
+            }
           />
           <DependencyGraph nodes={graph} services={services} />
           <ServiceList services={services} />

@@ -120,6 +120,7 @@ def test_diagnosis_reads_evidence_and_ignores_injection_lines(store):
     assert "connection pool timeout" in prompt
     assert "chaos updated" not in prompt
     assert request["outputConfig"]["textFormat"]["type"] == "json_schema"
+    assert "connection-pool exhaustion" not in request["system"][0]["text"].lower()
     saved = store.finish_diagnosis(incident.incident_id, claim, result)
     assert saved.diagnosis.status == "READY"
     assert store.finish_diagnosis(incident.incident_id, claim, result) is None
@@ -248,8 +249,11 @@ def test_background_analysis_survives_model_failure(store, fake, fails):
     )
 
     class Engine:
+        def __init__(self):
+            self.fail = fails
+
         def analyze(self, incident, timeline, services, claim):
-            if fails:
+            if self.fail:
                 raise RuntimeError("Bedrock is unavailable")
             assert any(event.kind == "evidence" for event in timeline)
             return ready_diagnosis(claim)
@@ -267,6 +271,7 @@ def test_background_analysis_survives_model_failure(store, fake, fails):
         def delete_message(self, **kwargs):
             pass
 
+    engine = Engine()
     app = create_app(
         store=store,
         http_client=fake.client(),
@@ -274,10 +279,10 @@ def test_background_analysis_survives_model_failure(store, fake, fails):
         health_interval_s=3600,
         queue_url="test",
         sqs_client=QueueClient(),
-        diagnosis_engine=Engine(),
+        diagnosis_engine=engine,
         diagnosis_delay_s=0,
     )
-    with TestClient(app):
+    with TestClient(app) as api:
         deadline = time.monotonic() + 3
         while time.monotonic() < deadline:
             current = store.get(incident.incident_id)
@@ -286,8 +291,75 @@ def test_background_analysis_survives_model_failure(store, fake, fails):
             time.sleep(0.02)
         assert current.diagnosis.status == ("UNAVAILABLE" if fails else "READY")
         assert current.status == "OPEN"
+        if fails:
+            engine.fail = False
+            retry = api.post(
+                f"/api/incidents/{incident.incident_id}/diagnosis/retry",
+                json={"actor": "alice"},
+            )
+            assert retry.status_code == 200
+            assert retry.json()["diagnosis"] is None
+            deadline = time.monotonic() + 3
+            while time.monotonic() < deadline:
+                current = store.get(incident.incident_id)
+                if current.diagnosis and current.diagnosis.status == "READY":
+                    break
+                time.sleep(0.02)
+            assert current.diagnosis.status == "READY"
+            assert (
+                api.post(
+                    f"/api/incidents/{incident.incident_id}/diagnosis/retry",
+                    json={"actor": "alice"},
+                ).status_code
+                == 409
+            )
     events = store.timeline(incident.incident_id)
     assert any(
         event.message == ("AI analysis unavailable" if fails else "AI analysis ready for review")
         for event in events
     )
+    if fails:
+        assert any(
+            event.message == "AI analysis retry requested" and event.actor == "alice"
+            for event in events
+        )
+
+
+def test_diagnosis_waits_for_later_cascade_evidence(store, fake):
+    incident = store.create(IncidentCreate(title="payment alarm", service="payment"))
+    observed = []
+
+    class Engine:
+        def analyze(self, incident, timeline, services, claim):
+            observed.extend(event.message for event in timeline if event.kind == "evidence")
+            return ready_diagnosis(claim)
+
+    class QueueClient:
+        def receive_message(self, **kwargs):
+            time.sleep(0.05)
+            return {}
+
+    app = create_app(
+        store=store,
+        http_client=fake.client(),
+        services=(MonitoredService("payment", "Payment", "http://payment", ()),),
+        queue_url="test",
+        sqs_client=QueueClient(),
+        diagnosis_engine=Engine(),
+        diagnosis_delay_s=0.2,
+        health_interval_s=3600,
+    )
+    with TestClient(app):
+        for event_id in ("event-early-123", "event-late-123"):
+            store.record_evidence(
+                incident.incident_id,
+                event_id,
+                datetime.now(UTC).isoformat(),
+                "test-evidence",
+                f"incidents/{incident.incident_id}/events/{event_id}",
+            )
+            time.sleep(0.04)
+        deadline = time.monotonic() + 3
+        while time.monotonic() < deadline and len(observed) < 2:
+            time.sleep(0.02)
+        assert len(observed) == 2

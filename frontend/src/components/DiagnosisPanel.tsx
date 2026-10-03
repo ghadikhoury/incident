@@ -6,9 +6,10 @@ interface Props {
   busy: boolean
   onApprove: (id: string, actionId: string) => void
   onReject: (id: string, actionId: string) => void
+  onRetry: (id: string) => void
 }
 
-export function DiagnosisPanel({ incident, actor, busy, onApprove, onReject }: Props) {
+export function DiagnosisPanel({ incident, actor, busy, onApprove, onReject, onRetry }: Props) {
   if (!incident) return null
   const diagnosis = incident.diagnosis
   return (
@@ -37,9 +38,22 @@ export function DiagnosisPanel({ incident, actor, busy, onApprove, onReject }: P
         </div>
         <div>
           <h3>AI inference</h3>
-          {!diagnosis && <p className="muted">Waiting for saved evidence.</p>}
+          {!diagnosis && <p className="muted">
+            {incident.trigger === 'CLOUDWATCH'
+              ? 'Collecting alarm evidence before analysis.'
+              : 'No automatic evidence available for this incident.'}
+          </p>}
           {diagnosis?.status === 'RUNNING' && <p>Analyzing saved evidence…</p>}
-          {diagnosis?.status === 'UNAVAILABLE' && <p>AI analysis unavailable.</p>}
+          {diagnosis?.status === 'UNAVAILABLE' && (
+            <>
+              <p>AI analysis unavailable.</p>
+              {incident.status !== 'RESOLVED' && (
+                <button disabled={busy || !actor.trim()} onClick={() => onRetry(incident.incident_id)}>
+                  Retry analysis
+                </button>
+              )}
+            </>
+          )}
           {diagnosis?.status === 'READY' && (
             <>
               <p>{diagnosis.summary}</p>

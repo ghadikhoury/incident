@@ -45,13 +45,14 @@ def create_app(
     queue_url: str | None = config.QUEUE_URL,
     sqs_client=None,
     diagnosis_engine: DiagnosisEngine | None = None,
-    diagnosis_delay_s: float = 10,
+    diagnosis_delay_s: float = 100,
 ) -> FastAPI:
     store = store or IncidentStore.from_config()
     client = http_client or httpx.AsyncClient()
     hub = Hub()
     services_by_name = {s.name: s for s in services}
     diagnosis_tasks: dict[str, asyncio.Task] = {}
+    stopping = False
 
     async def broadcast_services(snapshot: list[ServiceHealth]) -> None:
         await hub.broadcast({"type": "services", "data": [s.model_dump() for s in snapshot]})
@@ -98,9 +99,9 @@ def create_app(
                 LOG.exception("SQS incident update failed; retrying")
                 await asyncio.sleep(2)
 
-    async def diagnose(incident_id: str) -> None:
+    async def diagnose(incident_id: str, delay_s: float) -> None:
         try:
-            await asyncio.sleep(diagnosis_delay_s)  # allow alarms to join the evidence set
+            await asyncio.sleep(delay_s)  # allow the alarm cascade to join the evidence set
             incident = await run_in_threadpool(store.get, incident_id)
             if incident is None or incident.status == Status.RESOLVED:
                 return
@@ -129,11 +130,17 @@ def create_app(
         finally:
             diagnosis_tasks.pop(incident_id, None)
 
-    def schedule_diagnosis(incident_id: str) -> None:
+    def schedule_diagnosis(incident_id: str, delay_s: float = diagnosis_delay_s) -> None:
+        if stopping:
+            return
         if not queue_url and diagnosis_engine is None:
             return
-        if incident_id not in diagnosis_tasks:
-            diagnosis_tasks[incident_id] = asyncio.create_task(diagnose(incident_id))
+        existing = diagnosis_tasks.get(incident_id)
+        if existing is not None:
+            if delay_s == 0:
+                existing.add_done_callback(lambda _task: schedule_diagnosis(incident_id, 0))
+            return
+        diagnosis_tasks[incident_id] = asyncio.create_task(diagnose(incident_id, delay_s))
 
     async def execute_recommendation(incident_id: str, action_id: str) -> Incident:
         incident = await run_in_threadpool(store.get, incident_id)
@@ -208,10 +215,12 @@ def create_app(
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
+        nonlocal stopping
         task = asyncio.create_task(monitor.run(health_interval_s))
         queue_task = asyncio.create_task(consume_updates()) if queue_url else None
         diagnosis_task = asyncio.create_task(check_background_work()) if queue_url else None
         yield
+        stopping = True
         task.cancel()
         if queue_task:
             queue_task.cancel()
@@ -360,6 +369,20 @@ def create_app(
             raise HTTPException(409, str(exc)) from exc
         await broadcast_incident(updated)
         return await execute_recommendation(incident_id, action_id)
+
+    @app.post("/api/incidents/{incident_id}/diagnosis/retry")
+    async def retry_diagnosis(incident_id: str, body: DiagnosisDecision) -> Incident:
+        if not queue_url and diagnosis_engine is None:
+            raise HTTPException(503, "AI analysis is not configured")
+        try:
+            updated = await run_in_threadpool(store.retry_diagnosis, incident_id, body.actor)
+        except NotFound as exc:
+            raise HTTPException(404, f"incident {incident_id} not found") from exc
+        except Conflict as exc:
+            raise HTTPException(409, str(exc)) from exc
+        await broadcast_incident(updated)
+        schedule_diagnosis(incident_id, delay_s=0)
+        return updated
 
     @app.post("/api/incidents/{incident_id}/recommendations/{action_id}/reject")
     async def reject_recommendation(

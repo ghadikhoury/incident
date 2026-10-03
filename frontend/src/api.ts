@@ -133,6 +133,8 @@ export const api = {
       `/api/incidents/${encodeURIComponent(id)}/recommendations/${encodeURIComponent(actionId)}/${decision}`,
       { actor },
     ),
+  retryDiagnosis: (id: string, actor: string) =>
+    request<Incident>('POST', `/api/incidents/${encodeURIComponent(id)}/diagnosis/retry`, { actor }),
 }
 
 export function liveUrl(location: Location = window.location): string {

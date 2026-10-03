@@ -323,6 +323,49 @@ class IncidentStore:
             raise
         return self.get(incident_id)
 
+    def retry_diagnosis(self, incident_id: str, actor: str) -> Incident:
+        """Clear a failed analysis for an explicit, audited retry."""
+        update = {
+            "Update": {
+                "TableName": self.table.name,
+                "Key": self.incident_key(incident_id),
+                "UpdateExpression": "SET #updated = :now REMOVE #diagnosis",
+                "ConditionExpression": (
+                    "attribute_exists(pk) AND #status <> :resolved "
+                    "AND #diagnosis.#ds = :unavailable"
+                ),
+                "ExpressionAttributeNames": {
+                    "#updated": "updated_at",
+                    "#diagnosis": "diagnosis",
+                    "#status": "status",
+                    "#ds": "status",
+                },
+                "ExpressionAttributeValues": {
+                    ":now": now_iso(),
+                    ":resolved": Status.RESOLVED.value,
+                    ":unavailable": "UNAVAILABLE",
+                },
+            }
+        }
+        try:
+            self._transact(
+                [
+                    update,
+                    *self._event_puts(
+                        incident_id, [("diagnosis", "AI analysis retry requested")], actor
+                    ),
+                ]
+            )
+        except ClientError as exc:
+            if _conditional_failure(exc):
+                if self.get(incident_id) is None:
+                    raise NotFound(incident_id) from exc
+                raise Conflict(f"{incident_id} has no unavailable diagnosis to retry") from exc
+            raise
+        incident = self.get(incident_id)
+        assert incident is not None
+        return incident
+
     def change_recommendation(
         self,
         incident_id: str,

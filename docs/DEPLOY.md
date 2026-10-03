@@ -277,13 +277,17 @@ The setup script updates only the backend instance role: it can read saved incid
 evidence and invoke `openai.gpt-oss-20b-1:0` in us-east-2. The evidence bucket name
 defaults to `incident-evidence-<AWS account ID>`; set `INCIDENT_EVIDENCE_BUCKET` in
 `.env` only if the bucket differs. `BEDROCK_MODEL_ID` is configurable, but a different
-model also needs its ARN added to the instance IAM policy.
+model also needs its ARN added to `deploy/iam/instance-policy.json` and
+`deploy/setup_diagnosis.py` rerun.
 
-When evidence is saved, the backend starts one diagnosis in the background. It reads
+After the first alarm, the backend waits 100 seconds for the cascade's later alarms
+and evidence before diagnosing it. It reads
 bounded S3 log and metric excerpts, sends structured facts to Bedrock Converse, and
 stores the JSON result with the incident. If Bedrock is unavailable, the incident
-and its observed alerts stay visible with **AI analysis unavailable**. A stale worker
-claim is retried after five minutes. The dashboard distinguishes **Observed facts**
+and its observed alerts stay visible with **AI analysis unavailable**. An engineer
+can use **Retry analysis** after the model becomes available; that request is logged
+and starts immediately. A stale worker claim is retried after five minutes. The
+dashboard distinguishes **Observed facts**
 from **AI inference**. Model output can only suggest `clear_chaos` on the root
 monitored service; it cannot run commands or call AWS. An engineer must enter a name
 and click **Approve and run** or **Reject**. The decision and outcome are recorded
