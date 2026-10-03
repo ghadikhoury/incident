@@ -32,6 +32,8 @@ apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin do
 usermod -aG docker ubuntu  # lets the ubuntu user run docker without sudo
 
 git clone --branch "$BRANCH" "$REPO_URL" "$APP_DIR"
+# The evaluation runner is invoked by the ubuntu SSH user and writes here.
+install -d -o ubuntu -g ubuntu "$APP_DIR/scenarios/results"
 cat > "$APP_DIR/.env" <<'EOF'
 AWS_REGION=us-east-2
 # No named profile on EC2: the backend gets credentials from the instance's IAM role.
