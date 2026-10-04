@@ -119,8 +119,8 @@ def create_app(
                 result = await run_in_threadpool(
                     engine.analyze, incident, timeline, set(services_by_name), claim
                 )
-            except Exception:
-                LOG.exception("AI analysis failed for %s", incident_id)
+            except Exception as exc:
+                LOG.error("AI analysis failed for %s (%s)", incident_id, type(exc).__name__)
                 result = Diagnosis(status="UNAVAILABLE", claimed_at=claim)
             updated = await run_in_threadpool(store.finish_diagnosis, incident_id, claim, result)
             if updated:

@@ -1,6 +1,7 @@
-"""The sole Bedrock integration for incident diagnosis."""
+"""Bounded evidence and shared validation for incident diagnosis."""
 
 import json
+import os
 import re
 from typing import Literal
 
@@ -8,6 +9,7 @@ import boto3
 from pydantic import BaseModel, ConfigDict, Field
 
 from incident_api import config
+from incident_api.diagnosis.providers import BedrockProvider, GeminiProvider
 from incident_api.models import Diagnosis, Incident, RecommendedAction, TimelineEvent
 
 MAX_OBJECT_BYTES = 256_000
@@ -80,25 +82,68 @@ def _clean_samples(rows: list[dict]) -> list[dict]:
     return clean
 
 
+_SENSITIVE_KEY = re.compile(
+    r"authorization|cookie|password|secret|token|api.?key|credential|"
+    r"email|phone|address|user.?name|user.?id|customer|actor|client.?ip|session|ssn",
+    re.I,
+)
+_SENSITIVE_VALUE = re.compile(
+    r"(?i)(bearer\s+[a-z0-9._~+/-]+|"
+    r"(?:api[_-]?key|token|password|authorization|cookie|secret|"
+    r"credential|session(?:[_-]?id)?|user[_-]?id|customer[_-]?id|"
+    r"client[_-]?ip|ssn)\s*['\"]?\s*[:=]\s*['\"]?[^\s,;'\"}]+|"
+    r"[\w.+-]+@[\w.-]+\.[a-z]{2,}|"
+    r"\b(?:\d{1,3}\.){3}\d{1,3}\b)"
+)
+_PHONE_VALUE = re.compile(r"(?<!\w)\+?\d[\d(). -]{8,}\d(?!\w)")
+
+
+def _redact_text(value: str) -> str:
+    masked = _SENSITIVE_VALUE.sub("[REDACTED]", value)
+    return _PHONE_VALUE.sub(
+        lambda match: (
+            "[REDACTED]"
+            if 10 <= sum(char.isdigit() for char in match.group()) <= 15
+            else match.group()
+        ),
+        masked,
+    )
+
+
+def _redact(value):
+    if isinstance(value, dict):
+        return {
+            key: "[REDACTED]" if _SENSITIVE_KEY.search(str(key)) else _redact(item)
+            for key, item in value.items()
+        }
+    if isinstance(value, list):
+        return [_redact(item) for item in value]
+    if isinstance(value, str):
+        return _redact_text(value)
+    return value
+
+
 class DiagnosisEngine:
-    def __init__(self, s3, bedrock, bucket: str, model_id: str):
+    def __init__(self, s3, provider, bucket: str):
         self.s3 = s3
-        self.bedrock = bedrock
+        self.provider = provider
         self.bucket = bucket
-        self.model_id = model_id
 
     @classmethod
     def from_config(cls) -> "DiagnosisEngine":
+        if config.DIAGNOSIS_PROVIDER not in {"gemini", "bedrock"}:
+            raise ValueError(f"Unknown DIAGNOSIS_PROVIDER: {config.DIAGNOSIS_PROVIDER}")
+        if config.DIAGNOSIS_PROVIDER == "gemini":
+            provider = GeminiProvider(os.getenv("GEMINI_API_KEY", ""), config.GEMINI_MODEL, _SCHEMA)
         session = boto3.Session(profile_name=config.AWS_PROFILE, region_name=config.AWS_REGION)
         bucket = config.EVIDENCE_BUCKET or (
             "incident-evidence-" + session.client("sts").get_caller_identity()["Account"]
         )
-        return cls(
-            session.client("s3"),
-            session.client("bedrock-runtime"),
-            bucket,
-            config.BEDROCK_MODEL_ID,
-        )
+        if config.DIAGNOSIS_PROVIDER == "bedrock":
+            provider = BedrockProvider(
+                session.client("bedrock-runtime"), config.BEDROCK_MODEL_ID, _SCHEMA
+            )
+        return cls(session.client("s3"), provider, bucket)
 
     def _json_object(self, key: str) -> dict:
         body = self.s3.get_object(Bucket=self.bucket, Key=key)["Body"]
@@ -167,7 +212,7 @@ class DiagnosisEngine:
             },
             "artifacts": artifacts,
         }
-        prompt = json.dumps(facts, separators=(",", ":"), default=str)
+        prompt = json.dumps(_redact(facts), separators=(",", ":"), default=str)
         while len(prompt) > MAX_PROMPT_CHARS:
             # Retain a valid JSON document and the earliest evidence before trimming
             # lower-priority samples. A raw string slice could erase the root cause.
@@ -185,29 +230,8 @@ class DiagnosisEngine:
                     artifacts.pop()
                 else:
                     raise ValueError("incident evidence exceeds the prompt budget")
-            prompt = json.dumps(facts, separators=(",", ":"), default=str)
-        response = self.bedrock.converse(
-            modelId=self.model_id,
-            system=[{"text": SYSTEM_PROMPT}],
-            messages=[{"role": "user", "content": [{"text": prompt}]}],
-            inferenceConfig={"maxTokens": 1600, "temperature": 0},
-            outputConfig={
-                "textFormat": {
-                    "type": "json_schema",
-                    "structure": {
-                        "jsonSchema": {
-                            "name": "incident_diagnosis",
-                            "description": "Incident diagnosis and safe suggestions",
-                            "schema": json.dumps(_SCHEMA),
-                        }
-                    },
-                }
-            },
-        )
-        if response.get("stopReason") != "end_turn":
-            raise ValueError(f"Bedrock stopped with {response.get('stopReason')}")
-        content = response["output"]["message"]["content"]
-        text = "".join(block.get("text", "") for block in content)
+            prompt = json.dumps(_redact(facts), separators=(",", ":"), default=str)
+        text = self.provider.generate(SYSTEM_PROMPT, prompt)
         output = ModelDiagnosis.model_validate_json(text)
         recommendations = []
         for action in output.recommended_actions:

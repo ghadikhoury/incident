@@ -82,6 +82,11 @@ services:
       INCIDENT_METRIC_NAMESPACE: ${INCIDENT_METRIC_NAMESPACE:-Incident}
       INCIDENT_ALARM_PREFIX: ${INCIDENT_ALARM_PREFIX:-incident}
       INCIDENT_EVIDENCE_BUCKET: ${INCIDENT_EVIDENCE_BUCKET:-}
+      # Legacy EC2 .env files have no provider or Gemini key. Keep those installs
+      # on Bedrock until the operator explicitly selects Gemini and supplies a key.
+      DIAGNOSIS_PROVIDER: ${DIAGNOSIS_PROVIDER:-bedrock}
+      GEMINI_MODEL: ${GEMINI_MODEL:-gemini-flash-latest}
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
       BEDROCK_MODEL_ID: ${BEDROCK_MODEL_ID:-openai.gpt-oss-20b-1:0}
     volumes:
       # Reuse your local `aws login` session. Writable so the SDK can refresh it.

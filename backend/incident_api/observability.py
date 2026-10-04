@@ -109,7 +109,7 @@ class IncidentTelemetry:
         return {"start": start.isoformat(), "end": end.isoformat(), "series": series}
 
     def logs(self, incident: Incident, timeline: list[TimelineEvent]) -> dict:
-        prefixes = DiagnosisEngine(self.s3, None, self.bucket, "").evidence_prefixes(
+        prefixes = DiagnosisEngine(self.s3, None, self.bucket).evidence_prefixes(
             incident, timeline
         )[:MAX_EVENTS]
         rows = []
