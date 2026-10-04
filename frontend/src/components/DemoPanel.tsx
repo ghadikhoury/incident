@@ -1,5 +1,6 @@
 import { useState, type FormEvent } from 'react'
-import { SEVERITIES, type FailureType, type NewIncident, type ServiceHealth, type Severity } from '../api'
+import { SEVERITIES, type Environment, type FailureType, type NewIncident, type ServiceHealth, type Severity } from '../api'
+import { RecoveryInstructions } from './RecoveryInstructions'
 
 const FAILURES: { value: FailureType; label: string }[] = [
   { value: 'db_slow', label: 'Slow database (payment only)' },
@@ -13,15 +14,18 @@ const FAILURES: { value: FailureType; label: string }[] = [
 interface Props {
   services: ServiceHealth[]
   busy: boolean
+  environment?: Environment | null
   onInject: (service: string, failure: FailureType) => void
   onRecover: (service: string) => void
   onDeclare: (incident: NewIncident) => Promise<boolean>
 }
 
-export function DemoPanel({ services, busy, onInject, onRecover, onDeclare }: Props) {
+export function DemoPanel({ services, environment, busy, onInject, onRecover, onDeclare }: Props) {
   const names = services.map((s) => s.name)
   const [target, setTarget] = useState('payment')
   const [failure, setFailure] = useState<FailureType>('db_slow')
+  const crashed = services.find((s) => s.name === target)?.status === 'down'
+  const restart = crashed && environment?.mode === 'local' ? environment.restart_commands[target] : null
 
   const [title, setTitle] = useState('')
   const [service, setService] = useState('payment')
@@ -58,10 +62,13 @@ export function DemoPanel({ services, busy, onInject, onRecover, onDeclare }: Pr
         <button className="danger" disabled={busy} onClick={() => onInject(target, failure)}>
           Inject failure
         </button>
-        <button disabled={busy} onClick={() => onRecover(target)}>
+        <button disabled={busy || !!restart} onClick={() => onRecover(target)}>
           Recover
         </button>
       </div>
+
+      {environment?.mode === 'local' && <p className="muted">Local detection observes /health, not injected settings or request error rates. Crash is the simplest detection demo; other faults may leave health checks healthy.</p>}
+      {restart && <RecoveryInstructions command={restart} />}
 
       <h2>Declare incident</h2>
       <form onSubmit={declare} className="declare">

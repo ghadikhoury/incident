@@ -39,7 +39,7 @@ export interface IncidentDetail extends Incident {
 }
 
 export interface MetricPoint { at: string; value: number }
-export interface MetricSeries { service: string; metric: 'Latency' | 'Requests' | 'Errors'; points: MetricPoint[] }
+export interface MetricSeries { service: string; metric: 'Latency' | 'Requests' | 'Errors' | 'HealthLatency' | 'HealthCheckFailed'; points: MetricPoint[] }
 export interface IncidentMetrics { start: string; end: string; series: MetricSeries[] }
 export interface IncidentLogs { source: string; rows: Record<string, string>[] }
 
@@ -56,6 +56,7 @@ export interface Recommendation {
 export interface Diagnosis {
   status: 'RUNNING' | 'READY' | 'UNAVAILABLE'
   claimed_at: string
+  unavailable_reason?: 'missing_configuration' | 'provider_failure' | null
   summary: string | null
   likely_root_cause: string | null
   confidence: 'low' | 'medium' | 'high' | null
@@ -134,7 +135,16 @@ async function request<T>(method: string, path: string, body?: unknown): Promise
 
 const actorBody = (actor: string) => ({ actor: actor || undefined })
 
+export interface Environment {
+  mode: 'local' | 'aws'
+  incident_source: string
+  detection: { source: string; status: 'available' | 'unavailable' | 'configured' | 'queue_not_configured'; checked_at: string | null; failure_duration_s: number | null }
+  diagnosis: { provider: string; configuration: string }
+  restart_commands: Record<string, string>
+}
+
 export const api = {
+  environment: () => request<Environment>('GET', '/api/environment'),
   services: () => request<ServiceHealth[]>('GET', '/api/services'),
   serviceGraph: () => request<ServiceNode[]>('GET', '/api/services/graph'),
   incidents: () => request<Incident[]>('GET', '/api/incidents'),
