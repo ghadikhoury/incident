@@ -343,11 +343,22 @@ multiple alerts. Recover payment and resolve the incident when finished.
 
 ## Gemini backend key for an existing deployment
 
-Before selecting Gemini on EC2, provide a new key privately to the operator.
-On the instance, store it in `/opt/incident/.env` with owner-only permissions
-(`sudo chmod 600 /opt/incident/.env`), set `DIAGNOSIS_PROVIDER=gemini`,
-`GEMINI_MODEL=gemini-3.5-flash-lite`, and `GEMINI_API_KEY` there, then restart
-only the backend from `/opt/incident` with `sudo docker compose up -d --no-deps --force-recreate backend`.
+Merge the provider PR, then this documentation PR, and deploy the updated code.
+An existing EC2 `.env` without `DIAGNOSIS_PROVIDER` remains on Bedrock because
+Compose explicitly selects it for legacy configurations. Fresh EC2 user data
+also explicitly selects Bedrock. The application default and local
+`.env.example` select Gemini, but neither changes those EC2 settings. Bedrock's
+current zero quota can still produce `UNAVAILABLE`; the upgrade does not switch
+those installations to an unconfigured Gemini provider.
+
+After the code is deployed, provide a new key privately to the operator. On the
+instance, edit `/opt/incident/.env` privately and set `GEMINI_API_KEY`,
+`GEMINI_MODEL=gemini-3.5-flash-lite`, and `DIAGNOSIS_PROVIDER=gemini` together.
+Keep the file owner-only (`sudo chmod 600 /opt/incident/.env`). From
+`/opt/incident`, restart only the backend with
+`sudo docker compose up -d --no-deps --force-recreate --wait backend`, then
+verify a synthetic incident diagnosis. An explicit Gemini selection without a
+key yields `UNAVAILABLE`; it never falls back to Bedrock.
 Do not put a key in EC2 user data, shell history, the repository, or a dashboard
 request. The existing `deploy/update.sh` preserves `.env` on the instance.
 Use only synthetic incident evidence with the Gemini free tier. Check the

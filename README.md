@@ -122,10 +122,15 @@ Interactive API docs: http://localhost:8000/docs
 
 ### AI diagnosis providers
 
-The backend defaults to `DIAGNOSIS_PROVIDER=gemini` with
-`GEMINI_MODEL=gemini-flash-latest`. Copy `.env.example` to the Git-ignored
+The application default and `.env.example` select `DIAGNOSIS_PROVIDER=gemini`
+with `GEMINI_MODEL=gemini-flash-latest`. Copy `.env.example` to the Git-ignored
 `.env` and set `GEMINI_API_KEY` there for local Compose use. Only the backend
-receives the key. Use synthetic incident evidence only: Google's Gemini API
+receives the key. For upgrades, Compose selects Bedrock when an existing `.env`
+has no `DIAGNOSIS_PROVIDER`; new EC2 instances also start with Bedrock explicitly
+selected because no Gemini key is present at first boot. Set both the private key
+and `DIAGNOSIS_PROVIDER=gemini` before restarting the deployed backend. An
+explicit Gemini selection without a key reports `UNAVAILABLE` and never falls
+back to Bedrock. Use synthetic incident evidence only: Google's Gemini API
 free tier may use submitted content to improve its products. The backend
 redacts credential and personal-data patterns found in evidence, but this is
 not a substitute for keeping customer data out of the synthetic demo.
