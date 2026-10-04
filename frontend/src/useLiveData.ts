@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { api, liveUrl, type Environment, type Incident, type LiveMessage, type ServiceHealth, type ServiceNode } from './api'
 import { mergeIncidents, upsertIncident } from './logic'
 
@@ -20,24 +20,43 @@ export function useLiveData() {
   const [graphError, setGraphError] = useState<string | null>(null)
   const [environment, setEnvironment] = useState<Environment | null>(null)
   const [environmentError, setEnvironmentError] = useState<string | null>(null)
+  const modeRef = useRef<Environment['mode'] | null>(null)
+  const generation = useRef(0)
+  const environmentRequest = useRef(0)
   const reloadEnvironment = useCallback(async () => {
+    const requestId = ++environmentRequest.current
     try {
-      setEnvironment(await api.environment())
+      const fetched = await api.environment()
+      if (requestId !== environmentRequest.current) return false
+      const changed = modeRef.current !== null && modeRef.current !== fetched.mode
+      if (changed) {
+        generation.current++
+        setIncidents([])
+        window.location.hash = ''
+      }
+      modeRef.current = fetched.mode
+      setEnvironment(fetched)
       setEnvironmentError(null)
+      return changed
     } catch {
-      setEnvironmentError('Environment and detection availability could not be verified.')
+      if (requestId === environmentRequest.current)
+        setEnvironmentError('Environment and detection availability could not be verified.')
+      return false
     }
   }, [])
 
   const reloadIncidents = useCallback(async () => {
     try {
+      await reloadEnvironment()
+      const started = generation.current
       const fetched = await api.incidents()
+      if (started !== generation.current) return
       setIncidents((current) => mergeIncidents(current, fetched))
       setIncidentError(null)
     } catch (error) {
       setIncidentError(`Could not load incidents: ${(error as Error).message}`)
     }
-  }, [])
+  }, [reloadEnvironment])
 
   const reloadServices = useCallback(async () => {
     try {
@@ -72,7 +91,6 @@ export function useLiveData() {
       void reloadIncidents()
       void reloadServices()
       void reloadGraph()
-      void reloadEnvironment()
     })
 
     const connect = () => {
@@ -99,7 +117,11 @@ export function useLiveData() {
     }
 
     connect()
-    const environmentTimer = window.setInterval(() => { void reloadEnvironment() }, 5000)
+    const environmentTimer = window.setInterval(() => {
+      void reloadEnvironment().then((changed) => {
+        if (changed) { void reloadIncidents(); void reloadServices() }
+      })
+    }, 5000)
     return () => {
       stopped = true
       window.clearTimeout(retryTimer)

@@ -35,6 +35,31 @@ afterEach(() => {
   vi.unstubAllGlobals()
 })
 
+it('discards cached AWS incidents when the same dashboard backend switches to local mode', async () => {
+  let openSocket: (() => void) | undefined
+  class Socket {
+    set onopen(callback: () => void) { openSocket = callback }
+    close() {}
+  }
+  vi.stubGlobal('WebSocket', Socket)
+  let mode: 'aws' | 'local' = 'aws'
+  vi.stubGlobal('fetch', vi.fn(async (path: string) => ({ ok: true, json: async () => {
+    if (path === '/api/environment') return { mode, incident_source: mode === 'aws' ? 'AWS DynamoDB' : 'local SQLite',
+      detection: { source: mode === 'aws' ? 'AWS alarm pipeline' : 'local health probes', status: 'available', failure_duration_s: 9 },
+      diagnosis: { provider: 'gemini', configuration: 'configured' }, restart_commands: {} }
+    if (path === '/api/incidents') return mode === 'aws' ? [{ ...original, title: 'AWS-only record' }] : []
+    if (path === '/api/services') return [service]
+    return []
+  } })))
+  render(<App />)
+  expect(await screen.findByText('AWS-only record')).toBeTruthy()
+  mode = 'local'
+  openSocket?.()
+  expect(await screen.findByText(/Local demo · local SQLite/)).toBeTruthy()
+  await waitFor(() => expect(screen.queryByText('AWS-only record')).toBeNull())
+  expect(screen.getByText('No active incidents.')).toBeTruthy()
+})
+
 it('loads incidents and applies acknowledge/resolve responses while the socket never opens', async () => {
   class UnavailableSocket {
     close() {}

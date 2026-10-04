@@ -12,9 +12,10 @@ on that branch. Both PRs are intended for independent review and remain unmerged
   correlation/deduplication, recovery vs resolution, redaction and bounded
   evidence, local/AWS isolation, missing/failing model configuration, explicit
   retry to READY, and human approval plus recovery verification.
-- Frontend suite: **27 passed**, using fake API responses. Covers local evidence
+- Frontend suite: **28 passed**, using fake API responses. Covers local evidence
   and metric labels, latest recovery visibility, mode/isolation banner, missing
-  configuration, explicit retry, and operator restart instructions.
+  configuration, explicit retry, operator restart instructions, and discarding
+  cached AWS incidents when a backend mode switch is observed.
 - Ruff lint and formatting (72 Python files), frontend lint, production build,
   and `git diff --check`: passed.
 - Windows Vitest fork workers initially failed to start. The successful local
