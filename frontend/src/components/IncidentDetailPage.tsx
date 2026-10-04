@@ -3,6 +3,7 @@ import {
   api,
   SEVERITIES,
   type Incident,
+  type Environment,
   type IncidentDetail,
   type IncidentLogs,
   type IncidentMetrics,
@@ -13,9 +14,10 @@ import {
 } from '../api'
 import { DependencyGraph } from './DependencyGraph'
 import { DiagnosisPanel } from './DiagnosisPanel'
+import { RecoveryInstructions } from './RecoveryInstructions'
 
 const COLORS = ['#58a6ff', '#3fb950', '#d29922', '#e879f9']
-const METRIC_LABELS = { Latency: 'Latency p90 (ms)', Requests: 'Requests / min', Errors: 'Server errors / min' }
+const METRIC_LABELS = { Latency: 'Latency p90 (ms)', Requests: 'Requests / min', Errors: 'Server errors / min', HealthLatency: 'Health-probe latency (ms)', HealthCheckFailed: 'Health-probe failure (1 = failed)' }
 
 function MetricChart({ metric, series, start, end }: {
   metric: MetricSeries['metric']; series: MetricSeries[]; start: string; end: string
@@ -27,7 +29,7 @@ function MetricChart({ metric, series, start, end }: {
   return (
     <div className="metric-chart">
       <h3>{METRIC_LABELS[metric]}</h3>
-      {shown.length === 0 ? <p className="muted">No CloudWatch datapoints in this window.</p> : (
+      {shown.length === 0 ? <p className="muted">No collected datapoints in this window.</p> : (
         <>
           <svg viewBox="0 0 600 160" role="img" aria-label={`${METRIC_LABELS[metric]} over time`}>
             <line x1="45" y1="15" x2="45" y2="125" className="chart-axis" />
@@ -68,6 +70,7 @@ interface Props {
   incident: Incident
   graph: ServiceNode[]
   services: ServiceHealth[]
+  environment?: Environment | null
   actor: string
   busy: boolean
   onBack: () => void
@@ -79,7 +82,7 @@ interface Props {
   onRetry: (id: string) => void
 }
 
-export function IncidentDetailPage({ incident, graph, services, actor, busy, onBack, onAcknowledge,
+export function IncidentDetailPage({ incident, graph, services, environment, actor, busy, onBack, onAcknowledge,
   onResolve, onPatch, onApprove, onReject, onRetry }: Props) {
   const [detail, setDetail] = useState<IncidentDetail | null>(null)
   const [metrics, setMetrics] = useState<IncidentMetrics | null>(null)
@@ -91,6 +94,9 @@ export function IncidentDetailPage({ incident, graph, services, actor, busy, onB
   const [telemetryError, setTelemetryError] = useState<string | null>(null)
   const [query, setQuery] = useState('')
   const [ownerDraft, setOwnerDraft] = useState<string | null>(null)
+  const local = environment?.mode === 'local' || incident.trigger === 'LOCAL_HEALTH'
+  const restart = local && services.find((s) => s.name === (incident.probable_root ?? incident.service))?.status === 'down'
+    ? environment?.restart_commands[incident.probable_root ?? incident.service] : null
 
   useEffect(() => {
     let live = true
@@ -122,13 +128,15 @@ export function IncidentDetailPage({ incident, graph, services, actor, busy, onB
     void load()
     const timer = window.setInterval(() => { void load() }, 30_000)
     return () => { live = false; window.clearInterval(timer) }
-  }, [incident.incident_id])
+  }, [incident.incident_id, incident.updated_at])
 
   const current = detail && detail.updated_at >= incident.updated_at ? detail : incident
   const owner = ownerDraft ?? current.assigned_to ?? ''
   const matchingLogs = (searchResults?.rows ?? logs?.rows ?? []).filter((row) =>
     Object.values(row).some((value) => value.toLowerCase().includes(query.trim().toLowerCase()))
   )
+  const visibleLogs = matchingLogs.length > 200
+    ? [...matchingLogs.slice(0, 100), ...matchingLogs.slice(-100)] : matchingLogs
   const searchCloudWatch = async () => {
     if (!query.trim()) return
     setSearching(true)
@@ -136,7 +144,7 @@ export function IncidentDetailPage({ incident, graph, services, actor, busy, onB
     try {
       setSearchResults(await api.searchIncidentLogs(current.incident_id, query.trim()))
     } catch (cause) {
-      setSearchError(`CloudWatch search failed: ${(cause as Error).message}`)
+      setSearchError(`Evidence search failed: ${(cause as Error).message}`)
     } finally {
       setSearching(false)
     }
@@ -174,32 +182,32 @@ export function IncidentDetailPage({ incident, graph, services, actor, busy, onB
       </section>
 
       <section className="panel" aria-label="Metric graphs">
-        <h2>CloudWatch metrics</h2>
+        <h2>{local ? 'Collected health metrics' : 'CloudWatch metrics'}</h2>
         {telemetryError && <p role="alert">{telemetryError}</p>}
         {!metrics && <p className="muted">Loading metric history…</p>}
         {metrics && <div className="metric-grid">
-          {(['Latency', 'Requests', 'Errors'] as const).map((metric) =>
+          {(local ? ['HealthLatency', 'HealthCheckFailed'] as const : ['Latency', 'Requests', 'Errors'] as const).map((metric) =>
             <MetricChart key={metric} metric={metric} series={metrics.series} start={metrics.start} end={metrics.end} />
           )}
         </div>}
-        <p className="muted">One-minute CloudWatch datapoints, from five minutes before the incident. The view is capped at 30 minutes.</p>
+        <p className="muted">{local ? 'Actual /health probes. Probe latency is not request latency. Evidence retains initial observations and the latest probes, capped at 800 samples per incident.' : 'One-minute CloudWatch datapoints, from five minutes before the incident. The view is capped at 30 minutes.'}</p>
       </section>
 
       <section className="panel" aria-label="Saved logs">
-        <h2>Saved log excerpts</h2>
-        <p className="muted">Saved excerpts load automatically. Enter a term and search the full CloudWatch incident window when you need more than the saved samples.</p>
+        <h2>{local ? 'Collected health evidence' : 'Saved log excerpts'}</h2>
+        <p className="muted">{local ? 'Observed probe results and failures, not container logs or injection settings. Recovery adds healthy observations and OK alerts; resolving the incident is a separate engineer decision.' : 'Saved excerpts load automatically. Enter a term and search the full CloudWatch incident window when you need more than the saved samples.'}</p>
         <div className="log-search">
           <input aria-label="Search saved logs" placeholder="Search messages, errors, trace IDs…" value={query}
             maxLength={100} onChange={(event) => { setQuery(event.target.value); setSearchResults(null) }} />
           <button disabled={!query.trim() || searching} onClick={() => { void searchCloudWatch() }}>
-            {searching ? 'Searching…' : 'Search CloudWatch'}
+            {searching ? 'Searching…' : local ? 'Search collected evidence' : 'Search CloudWatch'}
           </button>
         </div>
         {searchError && <p role="alert">{searchError}</p>}
         {!logs && <p className="muted">Loading saved log excerpts…</p>}
-        {(logs || searchResults) && <p className="muted">{searchResults?.source ?? logs?.source}: {matchingLogs.length} matching lines{matchingLogs.length > 200 ? ' · showing first 200' : ''}</p>}
+        {(logs || searchResults) && <p className="muted">{searchResults?.source ?? logs?.source}: {matchingLogs.length} matching lines{matchingLogs.length > 200 ? ' · showing initial 100 and latest 100' : ''}</p>}
         <div className="log-list">
-          {matchingLogs.slice(0, 200).map((row, index) => <div className="log-row" key={`${row['@timestamp']}-${row.trace_id}-${index}`}>
+          {visibleLogs.map((row, index) => <div className="log-row" key={`${row['@timestamp']}-${row.trace_id}-${index}`}>
             <span className="mono muted">{row['@timestamp']} · {row.service}</span>
             <span>{row.error_type ?? row.message ?? row.error_message ?? JSON.stringify(row)}</span>
             {row.error_message && <span className="muted">{row.error_message}</span>}
@@ -210,7 +218,7 @@ export function IncidentDetailPage({ incident, graph, services, actor, busy, onB
       <div className="detail-grid">
         <section className="panel" aria-label="Related alerts">
           <h2>Related alerts</h2>
-          {!current.alerts?.length && <p className="muted">No CloudWatch alerts attached.</p>}
+          {!current.alerts?.length && <p className="muted">No observed alerts attached.</p>}
           <ul>{current.alerts?.map((alert) => <li key={alert.alarm_name}>
             <strong>{alert.service} {alert.signal}</strong> · {alert.state} · first {alert.first_at}
             {alert.observed_value != null && ` · observed ${alert.observed_value}`}
@@ -221,6 +229,9 @@ export function IncidentDetailPage({ incident, graph, services, actor, busy, onB
           alertedServices={new Set(current.alerts?.filter((alert) => alert.state === 'ALARM').map((alert) => alert.service))} />
       </div>
 
+      {restart && <section className="panel">
+        <RecoveryInstructions command={restart} />
+      </section>}
       <DiagnosisPanel incident={current} actor={actor} busy={busy} onApprove={onApprove} onReject={onReject} onRetry={onRetry} />
 
       <section className="panel" aria-label="Incident timeline">

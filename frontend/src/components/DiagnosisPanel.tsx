@@ -33,20 +33,24 @@ export function DiagnosisPanel({ incident, actor, busy, onApprove, onReject, onR
               ))}
             </ul>
           ) : (
-            <p className="muted">No CloudWatch observations attached.</p>
+            <p className="muted">No collected observations attached.</p>
           )}
         </div>
         <div>
           <h3>AI inference</h3>
+          {diagnosis && <p className="muted">AI status: {diagnosis.status} · Evidence snapshot analyzed at {diagnosis.claimed_at}. Later observations appear in the collected evidence and timeline.</p>}
           {!diagnosis && <p className="muted">
-            {incident.trigger === 'CLOUDWATCH'
-              ? 'Collecting alarm evidence before analysis.'
+            {incident.trigger === 'CLOUDWATCH' || incident.trigger === 'LOCAL_HEALTH'
+              ? 'Collecting observed evidence before analysis.'
               : 'No automatic evidence available for this incident.'}
           </p>}
           {diagnosis?.status === 'RUNNING' && <p>Analyzing saved evidence…</p>}
           {diagnosis?.status === 'UNAVAILABLE' && (
             <>
               <p>AI analysis unavailable.</p>
+              <p className="muted">{diagnosis.unavailable_reason === 'missing_configuration'
+                ? 'The backend Gemini API key is missing. Detection and collected evidence remain available.'
+                : 'The model call or evidence validation failed. No recommended actions were produced.'}</p>
               {incident.status !== 'RESOLVED' && (
                 <button disabled={busy || !actor.trim()} onClick={() => onRetry(incident.incident_id)}>
                   Retry analysis

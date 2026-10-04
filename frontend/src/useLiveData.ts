@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react'
-import { api, liveUrl, type Incident, type LiveMessage, type ServiceHealth, type ServiceNode } from './api'
+import { api, liveUrl, type Environment, type Incident, type LiveMessage, type ServiceHealth, type ServiceNode } from './api'
 import { mergeIncidents, upsertIncident } from './logic'
 
 export type Connection = 'connecting' | 'live' | 'offline'
@@ -18,6 +18,16 @@ export function useLiveData() {
   const [incidentError, setIncidentError] = useState<string | null>(null)
   const [serviceError, setServiceError] = useState<string | null>(null)
   const [graphError, setGraphError] = useState<string | null>(null)
+  const [environment, setEnvironment] = useState<Environment | null>(null)
+  const [environmentError, setEnvironmentError] = useState<string | null>(null)
+  const reloadEnvironment = useCallback(async () => {
+    try {
+      setEnvironment(await api.environment())
+      setEnvironmentError(null)
+    } catch {
+      setEnvironmentError('Environment and detection availability could not be verified.')
+    }
+  }, [])
 
   const reloadIncidents = useCallback(async () => {
     try {
@@ -62,6 +72,7 @@ export function useLiveData() {
       void reloadIncidents()
       void reloadServices()
       void reloadGraph()
+      void reloadEnvironment()
     })
 
     const connect = () => {
@@ -88,19 +99,22 @@ export function useLiveData() {
     }
 
     connect()
+    const environmentTimer = window.setInterval(() => { void reloadEnvironment() }, 5000)
     return () => {
       stopped = true
       window.clearTimeout(retryTimer)
       socket?.close()
+      window.clearInterval(environmentTimer)
     }
-  }, [reloadIncidents, reloadServices, reloadGraph])
+  }, [reloadIncidents, reloadServices, reloadGraph, reloadEnvironment])
 
   return {
     services,
     graph,
+    environment,
     incidents,
     connection,
-    loadError: incidentError ?? serviceError ?? graphError,
+    loadError: incidentError ?? serviceError ?? graphError ?? environmentError,
     applyIncident,
     reloadServices,
   }

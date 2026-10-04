@@ -50,6 +50,9 @@ it('loads incidents and applies acknowledge/resolve responses while the socket n
       if (input === '/api/incidents' && method === 'GET') payload = [original]
       else if (input === '/api/services') payload = [service]
       else if (input === '/api/services/graph') payload = []
+      else if (input === '/api/environment') payload = { mode: 'local', incident_source: 'local SQLite',
+        detection: { source: 'local health probes', status: 'available', failure_duration_s: 9 },
+        diagnosis: { provider: 'gemini', configuration: 'missing_key' }, restart_commands: {} }
       else if (input.endsWith('/acknowledge')) {
         payload = { ...original, status: 'ACKNOWLEDGED', updated_at: '2026-10-02T12:01:00Z' }
       } else if (input.endsWith('/resolve')) {
@@ -66,6 +69,8 @@ it('loads incidents and applies acknowledge/resolve responses while the socket n
 
   render(<App />)
   expect(await screen.findByText('Payment latency spike')).toBeTruthy()
+  expect(await screen.findByText(/Local demo · local SQLite/)).toBeTruthy()
+  expect(screen.getByText(/Local records are isolated from AWS/)).toBeTruthy()
   expect(requests).toContain('GET /api/incidents')
   fireEvent.click(screen.getByRole('button', { name: 'Acknowledge' }))
   await waitFor(() => expect(screen.getAllByText('ACKNOWLEDGED').length).toBeGreaterThan(0))

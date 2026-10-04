@@ -39,7 +39,7 @@ function selectedFromHash(): string | null {
 }
 
 export default function App() {
-  const { services, graph, incidents, connection, loadError, applyIncident, reloadServices } = useLiveData()
+  const { services, graph, incidents, environment, connection, loadError, applyIncident, reloadServices } = useLiveData()
   const now = useNow()
   const [actor, setActor] = useState(loadActor)
   const [busy, setBusy] = useState(false)
@@ -109,6 +109,18 @@ export default function App() {
         </label>
       </header>
 
+      <section className="panel environment" aria-label="Environment and detection">
+        {!environment ? <p>Environment: unverified. Automatic detection availability is unknown.</p> : <>
+          <strong>{environment.mode === 'local' ? 'Local demo' : 'AWS deployment'} · {environment.incident_source}</strong>
+          <p>{environment.detection.source}: {environment.detection.status.replaceAll('_', ' ')}.
+            {environment.mode === 'local' && ` Failures must persist for ${environment.detection.failure_duration_s} seconds and at least three probes. Local records are isolated from AWS.`}
+          </p>
+          <p className="muted">Diagnosis: {environment.diagnosis.provider} · {environment.diagnosis.configuration.replaceAll('_', ' ')}.
+            Configuration does not guarantee a successful model call. Use Review on an active incident to inspect evidence and AI status.
+          </p>
+        </>}
+      </section>
+
       {error && (
         <div className="error-banner" role="alert">
           {error}
@@ -124,6 +136,7 @@ export default function App() {
         incident={selected}
         graph={graph}
         services={services}
+        environment={environment}
         actor={actor}
         busy={busy}
         onBack={() => { window.location.hash = ''; setSelectedId(null) }}
@@ -153,6 +166,7 @@ export default function App() {
         </div>
         <DemoPanel
           services={services}
+          environment={environment}
           busy={busy}
           onInject={(service, failure: FailureType) =>
             run(() => api.injectFailure(service, failure), reloadServices)
