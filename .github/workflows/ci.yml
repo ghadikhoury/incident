@@ -54,6 +54,13 @@ jobs:
       - uses: actions/checkout@v4
       - name: EC2 compose layer is valid
         run: docker compose -f docker-compose.yml -f docker-compose.ec2.yml config --quiet
+      - name: Legacy and explicitly selected diagnosis providers
+        run: |
+          provider() {
+            docker compose config --format json | python3 -c 'import json,sys; print(json.load(sys.stdin)["services"]["backend"]["environment"]["DIAGNOSIS_PROVIDER"])'
+          }
+          test "$(provider)" = bedrock
+          test "$(DIAGNOSIS_PROVIDER=gemini GEMINI_API_KEY=test-only-key provider)" = gemini
       - name: Start services
         run: docker compose up -d --build --wait
       - name: Backend sees every service as healthy

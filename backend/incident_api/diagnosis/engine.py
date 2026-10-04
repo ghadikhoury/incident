@@ -89,10 +89,25 @@ _SENSITIVE_KEY = re.compile(
 )
 _SENSITIVE_VALUE = re.compile(
     r"(?i)(bearer\s+[a-z0-9._~+/-]+|"
-    r"(?:api[_-]?key|token|password|authorization)\s*[:=]\s*[^\s,;]+|"
+    r"(?:api[_-]?key|token|password|authorization|cookie|secret|"
+    r"credential|session(?:[_-]?id)?|user[_-]?id|customer[_-]?id|"
+    r"client[_-]?ip|ssn)\s*['\"]?\s*[:=]\s*['\"]?[^\s,;'\"}]+|"
     r"[\w.+-]+@[\w.-]+\.[a-z]{2,}|"
-    r"\b(?:\d{1,3}\.){3}\d{1,3}\b|\b(?:\+?\d[\d(). -]{8,}\d)\b)"
+    r"\b(?:\d{1,3}\.){3}\d{1,3}\b)"
 )
+_PHONE_VALUE = re.compile(r"(?<!\w)\+?\d[\d(). -]{8,}\d(?!\w)")
+
+
+def _redact_text(value: str) -> str:
+    masked = _SENSITIVE_VALUE.sub("[REDACTED]", value)
+    return _PHONE_VALUE.sub(
+        lambda match: (
+            "[REDACTED]"
+            if 10 <= sum(char.isdigit() for char in match.group()) <= 15
+            else match.group()
+        ),
+        masked,
+    )
 
 
 def _redact(value):
@@ -104,7 +119,7 @@ def _redact(value):
     if isinstance(value, list):
         return [_redact(item) for item in value]
     if isinstance(value, str):
-        return _SENSITIVE_VALUE.sub("[REDACTED]", value)
+        return _redact_text(value)
     return value
 
 

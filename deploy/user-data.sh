@@ -40,6 +40,9 @@ AWS_REGION=us-east-2
 AWS_PROFILE=
 INCIDENT_QUEUE_URL=
 INCIDENT_EVIDENCE_BUCKET=
+# New EC2 instances have no Gemini key at first boot. Select Gemini only after
+# the key is provided privately; never place it in user data.
+DIAGNOSIS_PROVIDER=bedrock
 # Add the EC2 layer: ships container logs (and the metrics in them) to CloudWatch.
 COMPOSE_FILE=docker-compose.yml:docker-compose.ec2.yml
 EOF
