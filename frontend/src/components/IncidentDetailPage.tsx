@@ -137,7 +137,7 @@ export function IncidentDetailPage({ incident, graph, services, environment, act
   )
   const visibleLogs = matchingLogs.length > 200
     ? [...matchingLogs.slice(0, 100), ...matchingLogs.slice(-100)] : matchingLogs
-  const searchCloudWatch = async () => {
+  const searchEvidence = async () => {
     if (!query.trim()) return
     setSearching(true)
     setSearchError(null)
@@ -199,7 +199,7 @@ export function IncidentDetailPage({ incident, graph, services, environment, act
         <div className="log-search">
           <input aria-label="Search saved logs" placeholder="Search messages, errors, trace IDs…" value={query}
             maxLength={100} onChange={(event) => { setQuery(event.target.value); setSearchResults(null) }} />
-          <button disabled={!query.trim() || searching} onClick={() => { void searchCloudWatch() }}>
+          <button disabled={!query.trim() || searching} onClick={() => { void searchEvidence() }}>
             {searching ? 'Searching…' : local ? 'Search collected evidence' : 'Search CloudWatch'}
           </button>
         </div>
