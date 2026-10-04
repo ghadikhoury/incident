@@ -27,6 +27,7 @@ cdk.out/
 infra/.build/
 docs/demo/.build/
 .tmp/
+data/
 
 # Editors / OS
 .vscode/

@@ -2,7 +2,7 @@
 
 Incident detection, diagnosis and response for distributed systems.
 
-Incident watches a set of microservices, detects failures through AWS CloudWatch, groups related alarms into a single incident, works out which service failed first, and uses a configurable Gemini or Amazon Bedrock model to suggest a root cause and remediation. An engineer approves or rejects each suggestion before anything runs.
+Incident watches a set of microservices, detects persistent health failures locally or alarms through AWS CloudWatch, groups related failures into a single incident, works out which service failed first, and uses a configurable Gemini or Amazon Bedrock model to suggest a root cause and remediation. An engineer approves or rejects each suggestion before anything runs.
 
 > Status: Stage 1 demo complete in code. AWS account quota and CDK migration remain
 > operational gates before inviting real users.
@@ -36,7 +36,7 @@ services (Docker on EC2) ──logs/metrics──▶ CloudWatch ──alarm─�
 
 ## Development
 
-Requirements: Python 3.12, Node 20+, Docker Desktop, AWS CLI v2.
+Requirements: Python 3.12, Node 20+, Docker Desktop. AWS CLI v2 is needed for AWS mode or Bedrock, not local Gemini detection.
 
 ```bash
 cp .env.example .env   # then fill in values
@@ -81,6 +81,21 @@ Every request is logged as one JSON line (`service`, `trace_id`, `endpoint`, `st
 
 `docker compose up -d --build --wait`, then open **http://localhost:3000**. It shows overall system health, each service's live status (with any injected failure), active incidents with acknowledge/resolve, and a simulation panel to break things and declare incidents. Everything updates live over a WebSocket; no refresh needed. Type your name in the top bar so your actions are attributed in incident timelines.
 
+The standard Compose stack uses **local mode**: persistent `/health` failures
+automatically create incidents in an isolated SQLite volume. AWS records are not
+read or changed. Choose inventory → Crash, wait through the nine-second persistence
+window, then click **Review** on the active incident for collected probe evidence,
+graphs, the timeline, and AI status. Detection works without a model key; missing
+configuration or provider failure produces an accurate `UNAVAILABLE` analysis.
+Local health-only detection does not observe request error rates when `/health`
+stays healthy. See [local setup, recovery, and safeguards](docs/LOCAL_DEMO.md).
+
+The EC2 Compose override selects **AWS mode**, retaining the CloudWatch alarm
+pipeline and disabling local detection. The environment banner makes the active
+mode, incident source, and detection configuration visible. For local crashes,
+the UI displays an operator restart command; the backend has no Docker or shell
+control. Healthy probes record recovery, and engineer resolution remains separate.
+
 To work on the dashboard with hot reload, keep the stack running and:
 
 ```bash
@@ -90,9 +105,12 @@ npm run lint && npm test && npm run build   # what CI runs
 
 ### Incident backend
 
-The backend (`backend/incident_api`, port 8000) stores incidents in DynamoDB, polls every service's health every 3 s, and pushes changes to dashboards over a WebSocket.
+The backend (`backend/incident_api`, port 8000) stores local incidents and evidence
+in SQLite or AWS incidents in DynamoDB, polls every service's health every 3 s,
+and pushes changes to dashboards over a WebSocket. Direct `uvicorn` defaults to
+AWS mode; set `INCIDENT_MODE=local` for local detection.
 
-Log in (`aws login --profile incident`) and create or upgrade the table:
+For AWS mode only, log in (`aws login --profile incident`) and create or upgrade the table:
 
 ```bash
 cd backend && INCIDENT_AWS_PROFILE=incident python -m incident_api.setup_table

@@ -70,6 +70,8 @@ services:
   backend:
     build: ./backend
     environment:
+      INCIDENT_MODE: ${INCIDENT_MODE:-local}
+      LOCAL_DB_PATH: /app/data/incidents.sqlite3
       GATEWAY_URL: http://gateway:8000
       ORDER_URL: http://order:8000
       PAYMENT_URL: http://payment:8000
@@ -89,6 +91,7 @@ services:
       GEMINI_API_KEY: ${GEMINI_API_KEY:-}
       BEDROCK_MODEL_ID: ${BEDROCK_MODEL_ID:-openai.gpt-oss-20b-1:0}
     volumes:
+      - local_incidents:/app/data
       # Reuse your local `aws login` session. Writable so the SDK can refresh it.
       - ~/.aws:/home/appuser/.aws
     ports: ["127.0.0.1:8000:8000"]
@@ -129,4 +132,5 @@ services:
       retries: 10
 
 volumes:
+  local_incidents:
   pgdata:

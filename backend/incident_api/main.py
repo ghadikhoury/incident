@@ -7,6 +7,7 @@ import asyncio
 import contextlib
 import json
 import logging
+import os
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
 
@@ -20,6 +21,7 @@ from incident_api.dependency import GRAPH
 from incident_api.diagnosis.engine import DiagnosisEngine
 from incident_api.health import HealthMonitor, ServiceHealth
 from incident_api.hub import Hub
+from incident_api.local import LocalIncidentStore, LocalTelemetry
 from incident_api.models import (
     Diagnosis,
     DiagnosisDecision,
@@ -39,7 +41,7 @@ LOG = logging.getLogger(__name__)
 
 def create_app(
     *,
-    store: IncidentStore | None = None,
+    store: IncidentStore | LocalIncidentStore | None = None,
     http_client: httpx.AsyncClient | None = None,
     services: tuple[config.MonitoredService, ...] = config.SERVICES,
     health_interval_s: float = config.HEALTH_INTERVAL_S,
@@ -47,14 +49,34 @@ def create_app(
     sqs_client=None,
     diagnosis_engine: DiagnosisEngine | None = None,
     telemetry: IncidentTelemetry | None = None,
-    diagnosis_delay_s: float = 100,
+    diagnosis_delay_s: float | None = None,
+    mode: str = config.INCIDENT_MODE,
+    local_db_path: str = config.LOCAL_DB_PATH,
+    local_failure_duration_s: float = config.LOCAL_FAILURE_DURATION_S,
 ) -> FastAPI:
-    store = store or IncidentStore.from_config()
+    if mode not in {"local", "aws"}:
+        raise ValueError(f"Unknown INCIDENT_MODE: {mode}; choose local or aws")
+    local = mode == "local"
+    if local_failure_duration_s < 0 or health_interval_s <= 0:
+        raise ValueError("Health interval must be positive and failure duration nonnegative")
+    if local and store is not None and not isinstance(store, LocalIncidentStore):
+        raise ValueError("Local mode requires an isolated LocalIncidentStore")
+    if not local and isinstance(store, LocalIncidentStore):
+        raise ValueError("AWS mode cannot use the local incident store")
+    owns_local_store = local and store is None
+    store = store or (LocalIncidentStore(local_db_path) if local else IncidentStore.from_config())
+    if local:
+        queue_url = None  # never consume AWS updates into the local store
+        telemetry = LocalTelemetry(store)
+    if diagnosis_delay_s is None:
+        diagnosis_delay_s = 6 if local else 100
     client = http_client or httpx.AsyncClient()
     hub = Hub()
     services_by_name = {s.name: s for s in services}
     diagnosis_tasks: dict[str, asyncio.Task] = {}
     stopping = False
+    detection_checked_at: str | None = None
+    detection_error = False
 
     async def broadcast_services(snapshot: list[ServiceHealth]) -> None:
         await hub.broadcast({"type": "services", "data": [s.model_dump() for s in snapshot]})
@@ -62,7 +84,28 @@ def create_app(
     async def broadcast_incident(incident: Incident) -> None:
         await hub.broadcast({"type": "incident", "data": incident.model_dump(mode="json")})
 
-    monitor = HealthMonitor(services, client, config.HEALTH_TIMEOUT_S, broadcast_services)
+    async def observe_local(snapshot: list[ServiceHealth]) -> None:
+        nonlocal detection_checked_at, detection_error
+        try:
+            updated = await run_in_threadpool(store.observe, snapshot, local_failure_duration_s)
+            detection_checked_at = max(
+                (s.checked_at for s in snapshot if s.checked_at), default=None
+            )
+            detection_error = False
+            for incident in updated:
+                await broadcast_incident(incident)
+                schedule_diagnosis(incident.incident_id)
+        except Exception:
+            detection_error = True
+            LOG.exception("Local incident detection failed")
+
+    monitor = HealthMonitor(
+        services,
+        client,
+        config.HEALTH_TIMEOUT_S,
+        broadcast_services,
+        observe_local if local else None,
+    )
 
     async def consume_updates():
         sqs = sqs_client or boto3.Session(
@@ -115,13 +158,20 @@ def create_app(
                 return
             await broadcast_incident(await run_in_threadpool(store.get, incident_id))
             try:
-                engine = diagnosis_engine or await run_in_threadpool(DiagnosisEngine.from_config)
+                engine = diagnosis_engine or await run_in_threadpool(
+                    DiagnosisEngine.from_config, store if local else None
+                )
                 result = await run_in_threadpool(
                     engine.analyze, incident, timeline, set(services_by_name), claim
                 )
             except Exception as exc:
                 LOG.error("AI analysis failed for %s (%s)", incident_id, type(exc).__name__)
-                result = Diagnosis(status="UNAVAILABLE", claimed_at=claim)
+                missing = config.DIAGNOSIS_PROVIDER == "gemini" and not os.getenv("GEMINI_API_KEY")
+                result = Diagnosis(
+                    status="UNAVAILABLE",
+                    claimed_at=claim,
+                    unavailable_reason="missing_configuration" if missing else "provider_failure",
+                )
             updated = await run_in_threadpool(store.finish_diagnosis, incident_id, claim, result)
             if updated:
                 await broadcast_incident(updated)
@@ -135,7 +185,7 @@ def create_app(
     def schedule_diagnosis(incident_id: str, delay_s: float = diagnosis_delay_s) -> None:
         if stopping:
             return
-        if not queue_url and diagnosis_engine is None:
+        if not local and not queue_url and diagnosis_engine is None:
             return
         existing = diagnosis_tasks.get(incident_id)
         if existing is not None:
@@ -179,6 +229,10 @@ def create_app(
             if action.action != "clear_chaos" or action.service not in services_by_name:
                 raise ValueError("recommendation is outside the remediation allowlist")
             await simulation.recover(client, services_by_name[action.service])
+            if local:
+                await monitor.poll_once()
+                if monitor.snapshot[action.service].status != "healthy":
+                    raise ValueError("service recovery was not verified by /health")
             outcome = "SUCCEEDED"
         except Exception:
             LOG.exception("Approved remediation failed for %s", incident_id)
@@ -220,7 +274,9 @@ def create_app(
         nonlocal stopping
         task = asyncio.create_task(monitor.run(health_interval_s))
         queue_task = asyncio.create_task(consume_updates()) if queue_url else None
-        diagnosis_task = asyncio.create_task(check_background_work()) if queue_url else None
+        diagnosis_task = (
+            asyncio.create_task(check_background_work()) if queue_url or local else None
+        )
         yield
         stopping = True
         task.cancel()
@@ -243,6 +299,8 @@ def create_app(
                 await worker
         if http_client is None:
             await client.aclose()
+        if owns_local_store:
+            store.close()
 
     app = FastAPI(title="Incident", lifespan=lifespan)
 
@@ -267,6 +325,38 @@ def create_app(
     @app.get("/api/health")
     def health():
         return {"status": "ok"}
+
+    @app.get("/api/environment")
+    def environment():
+        available = (
+            bool(detection_checked_at)
+            and not detection_error
+            and (datetime.now(UTC) - datetime.fromisoformat(detection_checked_at)).total_seconds()
+            < max(15, health_interval_s * 4)
+        )
+        return {
+            "mode": mode,
+            "incident_source": "local SQLite" if local else "AWS DynamoDB",
+            "detection": {
+                "source": "local health probes" if local else "AWS alarm pipeline",
+                "status": ("available" if available else "unavailable")
+                if local
+                else ("configured" if queue_url else "queue_not_configured"),
+                "checked_at": detection_checked_at,
+                "failure_duration_s": local_failure_duration_s if local else None,
+            },
+            "diagnosis": {
+                "provider": config.DIAGNOSIS_PROVIDER,
+                "configuration": "missing_key"
+                if config.DIAGNOSIS_PROVIDER == "gemini" and not os.getenv("GEMINI_API_KEY")
+                else "configured",
+            },
+            "restart_commands": {
+                s.name: f"docker compose start {s.name}"
+                for s in services
+                if local and s.name in {"gateway", "order", "payment", "inventory"}
+            },
+        }
 
     @app.get("/api/services")
     def list_services() -> list[ServiceHealth]:
@@ -417,7 +507,7 @@ def create_app(
 
     @app.post("/api/incidents/{incident_id}/diagnosis/retry")
     async def retry_diagnosis(incident_id: str, body: DiagnosisDecision) -> Incident:
-        if not queue_url and diagnosis_engine is None:
+        if not local and not queue_url and diagnosis_engine is None:
             raise HTTPException(503, "AI analysis is not configured")
         try:
             updated = await run_in_threadpool(store.retry_diagnosis, incident_id, body.actor)
@@ -475,6 +565,12 @@ def create_app(
         except simulation.SimulationError as exc:
             raise HTTPException(exc.status_code, exc.message) from exc
         await monitor.poll_once()
+        if local and monitor.snapshot[service.name].status != "healthy":
+            raise HTTPException(
+                409,
+                f"{service.name} reset was accepted, but /health has not recovered. "
+                "Recovery is not verified.",
+            )
         return {"service": service.name, "chaos": chaos}
 
     @app.websocket("/api/ws")

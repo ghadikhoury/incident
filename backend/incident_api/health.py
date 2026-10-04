@@ -10,6 +10,7 @@ import httpx
 from pydantic import BaseModel
 
 from incident_api.config import MonitoredService
+from incident_api.diagnosis.engine import _redact_text
 from incident_api.metrics import emit_health_checks
 from incident_api.store import now_iso
 
@@ -41,11 +42,14 @@ class HealthMonitor:
         client: httpx.AsyncClient,
         timeout_s: float,
         on_change: Callable[[list[ServiceHealth]], Awaitable[None]],
+        on_poll: Callable[[list[ServiceHealth]], Awaitable[None]] | None = None,
     ):
         self.services = services
         self.client = client
         self.timeout_s = timeout_s
         self.on_change = on_change
+        self.on_poll = on_poll
+        self.poll_lock = asyncio.Lock()
         self.snapshot = {
             s.name: ServiceHealth(
                 name=s.name,
@@ -60,12 +64,18 @@ class HealthMonitor:
         return list(self.snapshot.values())
 
     async def poll_once(self) -> None:
+        async with self.poll_lock:
+            await self._poll_once()
+
+    async def _poll_once(self) -> None:
         results = await asyncio.gather(*(self._check(s) for s in self.services))
         emit_health_checks(results)
         changed = any(not r.same_state_as(self.snapshot.get(r.name)) for r in results)
         self.snapshot = {r.name: r for r in results}
         if changed:
             await self.on_change(self.current())
+        if self.on_poll:
+            await self.on_poll(self.current())
 
     async def run(self, interval_s: float) -> None:
         while True:
@@ -105,6 +115,8 @@ class HealthMonitor:
 
 def _error_message(response: httpx.Response) -> str:
     try:
-        return response.json().get("message") or f"HTTP {response.status_code}"
-    except ValueError:
+        body = response.json()
+        message = body.get("message") if isinstance(body, dict) else None
+        return _redact_text(str(message)[:1000]) if message else f"HTTP {response.status_code}"
+    except (ValueError, TypeError):
         return f"HTTP {response.status_code}"

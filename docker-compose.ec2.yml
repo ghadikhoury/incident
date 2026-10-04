@@ -39,6 +39,8 @@ services:
       <<: *cloudwatch
       options: {<<: *cloudwatch-options, awslogs-group: "${INCIDENT_LOG_PREFIX:-/incident}/loadgen"}
   backend:
+    environment:
+      INCIDENT_MODE: aws
     logging:
       <<: *cloudwatch
       options: {<<: *cloudwatch-options, awslogs-group: "${INCIDENT_LOG_PREFIX:-/incident}/backend"}
