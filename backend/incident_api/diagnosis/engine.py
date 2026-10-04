@@ -99,6 +99,8 @@ _PHONE_VALUE = re.compile(r"(?<!\w)\+?\d[\d(). -]{8,}\d(?!\w)")
 
 
 def _redact_text(value: str) -> str:
+    # Redact bearer values before field matching can consume only the word Bearer.
+    value = re.sub(r"(?i)bearer\s+[a-z0-9._~+/-]+", "[REDACTED]", value)
     masked = _SENSITIVE_VALUE.sub("[REDACTED]", value)
     return _PHONE_VALUE.sub(
         lambda match: (
@@ -124,25 +126,30 @@ def _redact(value):
 
 
 class DiagnosisEngine:
-    def __init__(self, s3, provider, bucket: str):
+    def __init__(self, s3, provider, bucket: str, local_store=None):
         self.s3 = s3
         self.provider = provider
         self.bucket = bucket
+        self.local_store = local_store
 
     @classmethod
-    def from_config(cls) -> "DiagnosisEngine":
+    def from_config(cls, local_store=None) -> "DiagnosisEngine":
         if config.DIAGNOSIS_PROVIDER not in {"gemini", "bedrock"}:
             raise ValueError(f"Unknown DIAGNOSIS_PROVIDER: {config.DIAGNOSIS_PROVIDER}")
         if config.DIAGNOSIS_PROVIDER == "gemini":
             provider = GeminiProvider(os.getenv("GEMINI_API_KEY", ""), config.GEMINI_MODEL, _SCHEMA)
+            if local_store is not None:
+                return cls(None, provider, "", local_store)
         session = boto3.Session(profile_name=config.AWS_PROFILE, region_name=config.AWS_REGION)
-        bucket = config.EVIDENCE_BUCKET or (
-            "incident-evidence-" + session.client("sts").get_caller_identity()["Account"]
-        )
         if config.DIAGNOSIS_PROVIDER == "bedrock":
             provider = BedrockProvider(
                 session.client("bedrock-runtime"), config.BEDROCK_MODEL_ID, _SCHEMA
             )
+        if local_store is not None:
+            return cls(None, provider, "", local_store)
+        bucket = config.EVIDENCE_BUCKET or (
+            "incident-evidence-" + session.client("sts").get_caller_identity()["Account"]
+        )
         return cls(session.client("s3"), provider, bucket)
 
     def _json_object(self, key: str) -> dict:
@@ -169,13 +176,23 @@ class DiagnosisEngine:
                 prefixes.append(f"incidents/{incident.incident_id}/events/{suffix}")
         return prefixes[:MAX_EVIDENCE_EVENTS]
 
-    def analyze(
-        self,
-        incident: Incident,
-        timeline: list[TimelineEvent],
-        allowed_services: set[str],
-        claim: str,
-    ) -> Diagnosis:
+    def artifacts(self, incident: Incident, timeline: list[TimelineEvent]) -> list[dict]:
+        if self.local_store is not None:
+            rows = self.local_store.evidence(incident.incident_id)
+            if not rows:
+                raise ValueError("incident has no collected local evidence")
+            # Preserve first failure and latest recovery, bounded before prompt assembly.
+            if len(rows) > MAX_SAMPLES:
+                rows = rows[:20] + rows[-15:]
+            return [
+                {
+                    "source": "local health probes",
+                    "window": [rows[0]["@timestamp"], rows[-1]["@timestamp"]],
+                    "minute_summary": [],
+                    "error_samples": _clean_samples(rows),
+                    "metric_data": [],
+                }
+            ]
         prefixes = self.evidence_prefixes(incident, timeline)
         if not prefixes:
             raise ValueError("incident has no saved evidence")
@@ -192,6 +209,16 @@ class DiagnosisEngine:
                     "metric_data": metrics.get("MetricDataResults", [])[:5],
                 }
             )
+        return artifacts
+
+    def analyze(
+        self,
+        incident: Incident,
+        timeline: list[TimelineEvent],
+        allowed_services: set[str],
+        claim: str,
+    ) -> Diagnosis:
+        artifacts = self.artifacts(incident, timeline)
         root = incident.probable_root or incident.service
         artifacts.sort(
             key=lambda artifact: sum(

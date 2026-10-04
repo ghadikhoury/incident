@@ -45,6 +45,7 @@ class RecommendedAction(BaseModel):
 class Diagnosis(BaseModel):
     status: Literal["RUNNING", "READY", "UNAVAILABLE"]
     claimed_at: str
+    unavailable_reason: Literal["missing_configuration", "provider_failure"] | None = None
     summary: str | None = None
     likely_root_cause: str | None = None
     confidence: Literal["low", "medium", "high"] | None = None

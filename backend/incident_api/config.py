@@ -20,6 +20,9 @@ GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-flash-latest")
 BEDROCK_MODEL_ID = os.getenv("BEDROCK_MODEL_ID", "openai.gpt-oss-20b-1:0")
 HEALTH_INTERVAL_S = float(os.getenv("HEALTH_INTERVAL_S", "3"))
 HEALTH_TIMEOUT_S = float(os.getenv("HEALTH_TIMEOUT_S", "2"))
+INCIDENT_MODE = os.getenv("INCIDENT_MODE", "aws").lower()
+LOCAL_DB_PATH = os.getenv("LOCAL_DB_PATH", "data/incidents.sqlite3")
+LOCAL_FAILURE_DURATION_S = float(os.getenv("LOCAL_FAILURE_DURATION_S", "9"))
 
 
 @dataclass(frozen=True)
