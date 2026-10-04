@@ -259,6 +259,12 @@ def test_local_and_aws_store_isolation(local, store, fake):
             ).status_code
             == 404
         )
+        manual = client.post(
+            "/api/incidents", json={"title": "Local manual record", "service": "payment"}
+        ).json()
+        evidence = client.get(f"/api/incidents/{manual['incident_id']}/logs").json()
+        assert evidence["rows"] == []
+        assert evidence["source"] == "collected local health probes"
     assert store.get(aws_incident.incident_id).status == Status.OPEN
     fake.down.add("payment")
     with TestClient(

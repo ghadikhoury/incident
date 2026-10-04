@@ -421,7 +421,12 @@ def create_app(
             raise HTTPException(404, f"incident {incident_id} not found")
         timeline = await run_in_threadpool(store.timeline, incident_id)
         if not any(event.kind == "evidence" for event in timeline):
-            return {"source": "saved CloudWatch error/warning excerpts", "rows": []}
+            return {
+                "source": "collected local health probes"
+                if local
+                else "saved CloudWatch error/warning excerpts",
+                "rows": [],
+            }
         try:
             reader = telemetry or await run_in_threadpool(IncidentTelemetry.from_config)
             return await run_in_threadpool(reader.logs, incident, timeline)
@@ -442,8 +447,8 @@ def create_app(
             reader = telemetry or await run_in_threadpool(IncidentTelemetry.from_config)
             return await run_in_threadpool(reader.search_logs, incident, q)
         except Exception as exc:
-            LOG.exception("Could not search CloudWatch logs for %s", incident_id)
-            raise HTTPException(503, "CloudWatch log search is temporarily unavailable") from exc
+            LOG.exception("Could not search incident evidence for %s", incident_id)
+            raise HTTPException(503, "Incident evidence search is temporarily unavailable") from exc
 
     @app.patch("/api/incidents/{incident_id}")
     async def update_incident(incident_id: str, body: IncidentUpdate) -> Incident:
