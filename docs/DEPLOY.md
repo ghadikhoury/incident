@@ -341,7 +341,31 @@ For an end-to-end check, inject `db_slow` on payment and wait for the cascade:
 one incident should show payment as probable root, order as downstream, and
 multiple alerts. Recover payment and resolve the incident when finished.
 
-## Step 8: AI diagnosis and approved remediation
+## Gemini backend key for an existing deployment
+
+Before selecting Gemini on EC2, provide a new key privately to the operator.
+On the instance, store it in `/opt/incident/.env` with owner-only permissions
+(`sudo chmod 600 /opt/incident/.env`), set `DIAGNOSIS_PROVIDER=gemini`,
+`GEMINI_MODEL=gemini-3.5-flash-lite`, and `GEMINI_API_KEY` there, then restart
+only the backend from `/opt/incident` with `sudo docker compose up -d --no-deps --force-recreate backend`.
+Do not put a key in EC2 user data, shell history, the repository, or a dashboard
+request. The existing `deploy/update.sh` preserves `.env` on the instance.
+Use only synthetic incident evidence with the Gemini free tier. Check the
+alias's resolved model and the API project's free-tier quota before a live
+call. The alias returned HTTP 503 during the 2026-10-04 smoke check; a
+synthetic `gemini-3.5-flash-lite` call succeeded. The repository keeps the
+requested alias as its default until a live alias call succeeds. In the
+2026-10-04 `INC-1020` scenario, the existing EC2 pipeline saved seven
+synthetic evidence events. A local Gemini worker retried the prior
+`UNAVAILABLE` analysis and wrote `READY`; the EC2 dashboard showed three
+supporting evidence lines and a `PENDING` payment reset suggestion. The fault
+was restored via simulation controls. The EC2 backend itself still uses its
+previous release, so deploy the provider code and privately configure the key
+before claiming end-to-end deployed Gemini operation. For Bedrock later, set `DIAGNOSIS_PROVIDER=bedrock` and keep the existing
+`BEDROCK_MODEL_ID` and IAM policy. A provider failure remains `UNAVAILABLE`;
+there is no automatic fallback.
+
+## Historical Step 8: Bedrock diagnosis and approved remediation
 
 Run `AWS_PROFILE=incident python deploy/setup_diagnosis.py` from the Step 8 branch
 before deploying it to EC2 with `sudo /opt/incident/deploy/update.sh <branch>`.
