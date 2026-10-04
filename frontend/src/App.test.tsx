@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, expect, it, vi } from 'vitest'
 import App from './App'
 import type { Incident, ServiceHealth } from './api'
@@ -32,7 +32,98 @@ const service: ServiceHealth = {
 
 afterEach(() => {
   cleanup()
+  window.location.hash = ''
   vi.unstubAllGlobals()
+})
+
+function deferred<T>() {
+  let resolve!: (value: T) => void
+  let reject!: (reason: Error) => void
+  const promise = new Promise<T>((yes, no) => { resolve = yes; reject = no })
+  return { promise, resolve, reject }
+}
+
+function switchingBackend(heldPath: string, held: Promise<Response>) {
+  class Socket {
+    static instances: Socket[] = []
+    onopen?: () => void
+    onmessage?: (event: { data: string }) => void
+    onclose?: () => void
+    constructor() { Socket.instances.push(this) }
+    close() { this.onclose?.() }
+  }
+  vi.stubGlobal('WebSocket', Socket)
+  let mode: 'aws' | 'local' = 'aws'
+  const fetchMock = vi.fn(async (path: string) => {
+    if (path === heldPath) return held
+    let payload: unknown = []
+    if (path === '/api/environment') payload = {
+      mode, incident_source: mode === 'aws' ? 'AWS DynamoDB' : 'local SQLite',
+      detection: { source: 'health probes', status: 'available', failure_duration_s: 9 },
+      diagnosis: { provider: 'gemini', configuration: 'configured' }, restart_commands: {},
+    }
+    if (path === '/api/incidents') payload = [{ ...original, title: `${mode} record` }]
+    if (path === '/api/services') payload = [service]
+    return { ok: true, json: async () => payload } as Response
+  })
+  vi.stubGlobal('fetch', fetchMock)
+  return {
+    fetchMock,
+    sockets: Socket.instances,
+    switchToLocal: () => { mode = 'local'; Socket.instances.at(-1)?.onopen?.() },
+  }
+}
+
+it.each(['success', 'failure'] as const)('discards an old-environment action %s after a mode switch, even with colliding IDs', async (outcome) => {
+  const held = deferred<Response>()
+  const backend = switchingBackend('/api/incidents/INC-1001/acknowledge', held.promise)
+  render(<App />)
+  await screen.findByText('aws record')
+  fireEvent.click(screen.getByRole('button', { name: 'Acknowledge' }))
+  expect(backend.fetchMock).toHaveBeenCalledWith('/api/incidents/INC-1001/acknowledge', expect.anything())
+  backend.switchToLocal()
+  await screen.findByText('local record')
+  await act(async () => {
+    if (outcome === 'success') held.resolve({ ok: true, json: async () => ({ ...original, title: 'aws record', status: 'ACKNOWLEDGED' }) } as Response)
+    else held.reject(new Error('old AWS action failed'))
+  })
+  expect(screen.queryByText('aws record')).toBeNull()
+  expect(screen.queryByText('old AWS action failed')).toBeNull()
+  expect(screen.getByText('local record')).toBeTruthy()
+  expect(screen.getByRole('button', { name: 'Acknowledge' }).hasAttribute('disabled')).toBe(false)
+})
+
+it('discards delayed incident detail responses from the previous environment', async () => {
+  window.location.hash = '/incidents/INC-1999'
+  const held = deferred<Response>()
+  const backend = switchingBackend('/api/incidents/INC-1999', held.promise)
+  render(<App />)
+  await waitFor(() => expect(backend.fetchMock).toHaveBeenCalledWith('/api/incidents/INC-1999', expect.anything()))
+  backend.switchToLocal()
+  await screen.findByText('local record')
+  await act(async () => held.resolve({ ok: true, json: async () => ({ ...original, incident_id: 'INC-1999', title: 'old AWS detail', timeline: [] }) } as Response))
+  expect(screen.queryByText('old AWS detail')).toBeNull()
+})
+
+it('ignores messages and close events from an obsolete socket after switching environments', async () => {
+  const backend = switchingBackend('/unused', Promise.resolve({} as Response))
+  render(<App />)
+  await screen.findByText('aws record')
+  const oldSocket = backend.sockets.at(-1)!
+  backend.switchToLocal()
+  await screen.findByText('local record')
+  const currentSocket = backend.sockets.at(-1)!
+  expect(currentSocket).not.toBe(oldSocket)
+  await act(async () => {
+    oldSocket.onmessage?.({ data: JSON.stringify({ type: 'incident', data: { ...original, title: 'obsolete AWS push' } }) })
+    oldSocket.onmessage?.({ data: JSON.stringify({ type: 'services', data: [{ ...service, display_name: 'Obsolete AWS service' }] }) })
+    oldSocket.onclose?.()
+  })
+  expect(screen.queryByText('obsolete AWS push')).toBeNull()
+  expect(screen.queryByText('Obsolete AWS service')).toBeNull()
+  expect(screen.queryByText('Offline, retrying…')).toBeNull()
+  await act(async () => currentSocket.onmessage?.({ data: JSON.stringify({ type: 'incident', data: { ...original, title: 'current local push' } }) }))
+  expect(screen.getByText('current local push')).toBeTruthy()
 })
 
 it('discards cached AWS incidents when the same dashboard backend switches to local mode', async () => {

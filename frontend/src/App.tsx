@@ -39,11 +39,13 @@ function selectedFromHash(): string | null {
 }
 
 export default function App() {
-  const { services, graph, incidents, environment, connection, loadError, applyIncident, reloadServices } = useLiveData()
+  const { services, graph, incidents, environment, connection, loadError, applyIncident, reloadServices, captureEnvironment } = useLiveData()
   const now = useNow()
   const [actor, setActor] = useState(loadActor)
-  const [busy, setBusy] = useState(false)
-  const [actionError, setActionError] = useState<string | null>(null)
+  const [pendingAction, setPendingAction] = useState<{ isCurrent: () => boolean } | null>(null)
+  const [actionFailure, setActionFailure] = useState<{ message: string; isCurrent: () => boolean } | null>(null)
+  const busy = pendingAction?.isCurrent() ?? false
+  const actionError = actionFailure?.isCurrent() ? actionFailure.message : null
   const [selectedId, setSelectedId] = useState<string | null>(selectedFromHash)
   const [selectedError, setSelectedError] = useState<string | null>(null)
 
@@ -56,30 +58,33 @@ export default function App() {
   useEffect(() => {
     if (!selectedId || selectedError || incidents.some((item) => item.incident_id === selectedId)) return
     let live = true
+    const isCurrent = captureEnvironment()
     void api.incident(selectedId).then((incident) => {
-      if (live) applyIncident(incident)
+      if (live && isCurrent()) applyIncident(incident)
     }).catch((error: Error) => {
-      if (live) setSelectedError(`Could not load incident ${selectedId}: ${error.message}`)
+      if (live && isCurrent()) setSelectedError(`Could not load incident ${selectedId}: ${error.message}`)
     })
     return () => { live = false }
-  }, [selectedId, selectedError, incidents, applyIncident])
+  }, [selectedId, selectedError, incidents, applyIncident, captureEnvironment])
 
   // Apply successful responses immediately, including when the live socket is offline.
   const run = async <T,>(
     action: () => Promise<T>,
     onSuccess?: (result: T) => void | Promise<void>,
   ): Promise<boolean> => {
-    setBusy(true)
-    setActionError(null)
+    const isCurrent = captureEnvironment()
+    setPendingAction({ isCurrent })
+    setActionFailure(null)
     try {
       const result = await action()
+      if (!isCurrent()) return false
       await onSuccess?.(result)
-      return true
+      return isCurrent()
     } catch (error) {
-      setActionError((error as Error).message)
+      if (isCurrent()) setActionFailure({ message: (error as Error).message, isCurrent })
       return false
     } finally {
-      setBusy(false)
+      if (isCurrent()) setPendingAction(null)
     }
   }
 
@@ -124,7 +129,7 @@ export default function App() {
       {error && (
         <div className="error-banner" role="alert">
           {error}
-          <button onClick={() => setActionError(null)} aria-label="Dismiss">
+          <button onClick={() => setActionFailure(null)} aria-label="Dismiss">
             ×
           </button>
         </div>

@@ -1,7 +1,8 @@
 # Local demo verification — 2026-10-04
 
-Backend: `feat/local-incident-detection` (PR #16). Dashboard changes are stacked
-on that branch. Both PRs are intended for independent review and remain unmerged.
+Backend PR #16 was independently reviewed and merged into main at
+`0d47905b6fcfef29245cf56c3026da05daa41a10`. Dashboard PR #17 now targets main
+and remains unmerged for independent review.
 
 ## Automated checks
 
@@ -12,10 +13,12 @@ on that branch. Both PRs are intended for independent review and remain unmerged
   correlation/deduplication, recovery vs resolution, redaction and bounded
   evidence, local/AWS isolation, missing/failing model configuration, explicit
   retry to READY, and human approval plus recovery verification.
-- Frontend suite: **28 passed**, using fake API responses. Covers local evidence
+- Frontend suite after the review fixes: **39 passed**, 19.90 seconds, using fake API responses. Covers local evidence
   and metric labels, latest recovery visibility, mode/isolation banner, missing
   configuration, explicit retry, operator restart instructions, and discarding
-  cached AWS incidents when a backend mode switch is observed.
+  cached AWS incidents when a backend mode switch is observed, deferred action
+  successes/errors with colliding incident IDs, deferred incident detail and
+  incident/service/dependency fetches, and obsolete or closed WebSocket events.
 - Ruff lint and formatting (72 Python files), frontend lint, production build,
   and `git diff --check`: passed.
 - Windows Vitest fork workers initially failed to start. The successful local
@@ -65,7 +68,32 @@ inventory health alarm only. Evidence identifies unreachability but cannot prove
 the process-exit mechanism without container logs. Diagnoses are snapshots, not
 automatic rewrites after recovery. Run one local backend instance.
 
-Review both focused PRs, then merge the backend first and retarget the stacked
-dashboard PR to main. Rebuild the local Compose stack after merging. No AWS
+Rereview dashboard PR #17 before merging; backend PR #16 is already merged.
+Rebuild the local Compose stack after merging. No AWS
 deployment is required for the local flow. The private key remains runtime-only;
 model configuration alone does not guarantee free-tier quota or availability.
+
+## PR #17 review regression
+
+The reviewer reproduced an AWS acknowledgment response arriving after a switch
+to local mode and reinserting an AWS record under the local banner. Before the
+fix, three new App regressions failed: delayed action success, delayed action
+error, and obsolete WebSocket messages. All now pass.
+
+Every App action captures an environment generation before issuing its request.
+Results, errors, and busy state are scoped to that generation. Deferred detail,
+list, health, and dependency responses are guarded too. Mode changes clear
+cached data, retire the old socket, and establish a new connection. Closed and
+obsolete sockets cannot update incident, service, or connection state; current
+responses and reconnects still work. These races were exercised with deferred
+fake responses, without switching a real backend into AWS mode or using a model
+key. No additional model call or remediation was performed for these fixes.
+
+After `docker compose up -d --build --no-deps frontend`, browser verification at
+`http://127.0.0.1:3000` confirmed the local SQLite banner and available health
+detection. Active incidents showed one incident; its Review button reopened
+`INC-1002`, with collected evidence, a saved READY diagnosis, an OK recovery
+alert, OPEN incident status, and a PENDING recommendation. The engineer identity
+was left blank and approval controls stayed disabled. This rechecks navigation
+and rendering of the existing real scenario; it does not count as a new live
+model call or a real AWS/local mode-switch test.
