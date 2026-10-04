@@ -2,7 +2,7 @@
 
 Incident detection, diagnosis and response for distributed systems.
 
-Incident watches a set of microservices, detects failures through AWS CloudWatch, groups related alarms into a single incident, works out which service failed first, and uses an LLM (through Amazon Bedrock) to suggest a root cause and remediation. An engineer approves or rejects each suggestion before anything runs.
+Incident watches a set of microservices, detects failures through AWS CloudWatch, groups related alarms into a single incident, works out which service failed first, and uses a configurable Gemini or Amazon Bedrock model to suggest a root cause and remediation. An engineer approves or rejects each suggestion before anything runs.
 
 > Status: Stage 1 demo complete in code. AWS account quota and CDK migration remain
 > operational gates before inviting real users.
@@ -18,7 +18,7 @@ services (Docker on EC2) ──logs/metrics──▶ CloudWatch ──alarm─�
                                         │
                               Incident backend (FastAPI) ──WebSocket──▶ Dashboard (React)
                                         │
-                                     Bedrock (diagnosis)
+                                     Gemini / Bedrock (diagnosis)
 ```
 
 ## Roadmap
@@ -30,7 +30,7 @@ services (Docker on EC2) ──logs/metrics──▶ CloudWatch ──alarm─�
 5. [x] CloudWatch detection
 6. [x] Lambda incident pipeline (DynamoDB, S3, SQS)
 7. [x] Dependency graph, correlation, severity
-8. [x] AI diagnosis (Bedrock) + human approval (live model verification awaits account quota)
+8. [x] AI diagnosis + human approval (live model verification pending)
 9. [x] Incident detail page + evaluation harness
 10. [x] Infrastructure as code (CDK), hardening, docs ([fresh deployment verified](docs/STEP10_VERIFICATION.md); migration of the original demo remains)
 
@@ -120,6 +120,48 @@ is safe to rerun after an interruption and does not add resolved incidents.
 
 Interactive API docs: http://localhost:8000/docs
 
+### AI diagnosis providers
+
+The application default and `.env.example` select `DIAGNOSIS_PROVIDER=gemini`
+with `GEMINI_MODEL=gemini-flash-latest`. Copy `.env.example` to the Git-ignored
+`.env` and set `GEMINI_API_KEY` there for local Compose use. Only the backend
+receives the key. For upgrades, Compose selects Bedrock when an existing `.env`
+has no `DIAGNOSIS_PROVIDER`; new EC2 instances also start with Bedrock explicitly
+selected because no Gemini key is present at first boot. Set both the private key
+and `DIAGNOSIS_PROVIDER=gemini` before restarting the deployed backend. An
+explicit Gemini selection without a key reports `UNAVAILABLE` and never falls
+back to Bedrock. Use synthetic incident evidence only: Google's Gemini API
+free tier may use submitted content to improve its products. The backend
+redacts credential and personal-data patterns found in evidence, but this is
+not a substitute for keeping customer data out of the synthetic demo.
+
+Set `DIAGNOSIS_PROVIDER=bedrock` to switch back after AWS grants positive
+quota. `BEDROCK_MODEL_ID` still defaults to `openai.gpt-oss-20b-1:0`;
+changing it also requires the corresponding IAM permission. There is no
+automatic provider fallback. A failed model call shows `UNAVAILABLE` and can
+be retried from the dashboard. Model output is validated and can only suggest
+`clear_chaos` for the probable root service; an engineer must explicitly
+approve it before any remediation runs.
+
+Gemini free-tier availability and limits depend on the model and the API
+project's active quota. Google currently documents the alias as
+`gemini-3.5-flash`, but its model metadata only reports the alias name. On
+2026-10-04 the alias returned HTTP 503 during a synthetic smoke call and its
+bounded retry. A separate synthetic call to the free-tier
+`gemini-3.5-flash-lite` returned that exact model version and passed the
+`ModelDiagnosis` schema with cited evidence. Set
+`GEMINI_MODEL=gemini-3.5-flash-lite` in the private `.env` to use this
+verified model locally; the repository default remains the requested alias.
+Fake-based diagnosis tests cover both adapters and failure handling. In one
+live `db_slow` scenario on 2026-10-04, the existing EC2 pipeline saved seven
+synthetic evidence events for `INC-1020`. After its Bedrock attempt returned
+`UNAVAILABLE`, a local Gemini diagnosis worker used the audited retry path and
+stored `READY`. The EC2 dashboard rendered payment as probable root, three
+supporting evidence statements, and a `clear_chaos:payment` suggestion still
+`PENDING`. The fault was restored through the simulation control; no AI
+recommendation was approved or executed. The deployed EC2 worker has not yet
+been switched to Gemini, and Bedrock has not produced a live `READY` result.
+
 ### Tests
 
 ```bash
@@ -147,15 +189,16 @@ the browser also fetches current state on reconnect, so a missed live message do
 not hide an incident. A separate SQS queue holds failed alarm deliveries and
 exhausted retries for inspection. S3 keeps time bounded logs and metrics separately
 from the incident record. Severity and likely root service come from explicit,
-testable rules over alarm facts. Bedrock's result is labeled as inference, and a
+testable rules over alarm facts. The selected model's result is labeled as inference, and a
 human must approve any proposed recovery action.
 
 The EC2 security group allows SSH from one IPv4 address. The dashboard and API
 bind to loopback and are accessed through an SSH tunnel. The EC2 dashboard also
 requires a randomly generated login, which protects the proxied API and WebSocket.
 The evidence bucket blocks public access and encrypts objects; queues use SQS
-managed encryption. Runtime credentials come from IAM roles, not access keys in
-source or container environment variables.
+managed encryption. AWS runtime credentials come from IAM roles rather than access keys in
+source or container environment variables. Gemini uses a backend-only API key
+provided through a private, Git-ignored environment file.
 
 ## Measured demo and cost
 
