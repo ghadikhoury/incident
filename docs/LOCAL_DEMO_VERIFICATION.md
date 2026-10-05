@@ -134,3 +134,15 @@ Default pytest discovery now includes `infra/tests`, and the Python CI job
 explicitly installs Node 24 for CDK/jsii before building the Lambda asset and
 running the complete suite. No new video was recorded for this update; the
 existing Stage 1 video covers the earlier AWS demonstration.
+
+## Pre-merge review
+
+[CI run 87](https://github.com/ghadikhoury/incident/actions/runs/37257586866)
+passed Python and Compose checks but exposed an intermittent frontend regression:
+the obsolete-socket test read the replacement connection before React's effect
+completed. The test now switches modes inside `act` and waits for the actual
+replacement socket before checking stale messages and the valid current push.
+The assertions and application code are unchanged. After this synchronization
+fix, all **39 frontend tests** passed locally in 17.55 seconds, with lint and
+production build passing too. The affected regression also passed **five
+separate runs**. Credential, documentation-link, and diff checks passed.
