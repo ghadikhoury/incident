@@ -73,8 +73,8 @@ automatic rewrites after recovery. Run one local backend instance.
 
 PRs #16 and #17 are merged. Build the local Compose stack from main to use
 the completed local flow; no AWS deployment is required. The private key remains
-runtime-only;
-model configuration alone does not guarantee free-tier quota or availability.
+runtime-only; model configuration alone does not guarantee free-tier quota or
+availability.
 Two successful requests do not measure AI accuracy or production reliability.
 Human approval is covered by fake-based tests; this real crash was recovered
 with an operator command, without approving or executing a recommendation.
@@ -104,7 +104,7 @@ was left blank and approval controls stayed disabled. This rechecks navigation
 and rendering of the existing real scenario; it does not count as a new live
 model call or a real AWS/local mode-switch test.
 
-## Main-branch verification refresh ? 2026-10-04
+## Main-branch verification refresh (2026-10-04)
 
 This update starts from merged main `55e6f9f` and aligns the example, application,
 and Compose model defaults with `gemini-3.5-flash-lite`. Bedrock selection,
