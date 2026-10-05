@@ -87,7 +87,7 @@ services:
       # Legacy EC2 .env files have no provider or Gemini key. Keep those installs
       # on Bedrock until the operator explicitly selects Gemini and supplies a key.
       DIAGNOSIS_PROVIDER: ${DIAGNOSIS_PROVIDER:-bedrock}
-      GEMINI_MODEL: ${GEMINI_MODEL:-gemini-flash-latest}
+      GEMINI_MODEL: ${GEMINI_MODEL:-gemini-3.5-flash-lite}
       GEMINI_API_KEY: ${GEMINI_API_KEY:-}
       BEDROCK_MODEL_ID: ${BEDROCK_MODEL_ID:-openai.gpt-oss-20b-1:0}
     volumes:

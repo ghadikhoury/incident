@@ -110,10 +110,10 @@ it('ignores messages and close events from an obsolete socket after switching en
   render(<App />)
   await screen.findByText('aws record')
   const oldSocket = backend.sockets.at(-1)!
-  backend.switchToLocal()
+  await act(async () => backend.switchToLocal())
   await screen.findByText('local record')
+  await waitFor(() => expect(backend.sockets.at(-1)).not.toBe(oldSocket))
   const currentSocket = backend.sockets.at(-1)!
-  expect(currentSocket).not.toBe(oldSocket)
   await act(async () => {
     oldSocket.onmessage?.({ data: JSON.stringify({ type: 'incident', data: { ...original, title: 'obsolete AWS push' } }) })
     oldSocket.onmessage?.({ data: JSON.stringify({ type: 'services', data: [{ ...service, display_name: 'Obsolete AWS service' }] }) })
