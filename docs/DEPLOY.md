@@ -343,7 +343,8 @@ multiple alerts. Recover payment and resolve the incident when finished.
 
 ## Gemini backend key for an existing deployment
 
-Merge the provider PR, then this documentation PR, and deploy the updated code.
+The provider and dashboard changes are merged. Deploy the updated main branch
+when updating an existing EC2 installation.
 An existing EC2 `.env` without `DIAGNOSIS_PROVIDER` remains on Bedrock because
 Compose explicitly selects it for legacy configurations. Fresh EC2 user data
 also explicitly selects Bedrock. The application default and local
@@ -362,10 +363,10 @@ key yields `UNAVAILABLE`; it never falls back to Bedrock.
 Do not put a key in EC2 user data, shell history, the repository, or a dashboard
 request. The existing `deploy/update.sh` preserves `.env` on the instance.
 Use only synthetic incident evidence with the Gemini free tier. Check the
-alias's resolved model and the API project's free-tier quota before a live
-call. The alias returned HTTP 503 during the 2026-10-04 smoke check; a
-synthetic `gemini-3.5-flash-lite` call succeeded. The repository keeps the
-requested alias as its default until a live alias call succeeds. In the
+selected model and the API project's quota before a live call. The older
+alias returned HTTP 503 during the 2026-10-04 smoke check; the repository now
+defaults to `gemini-3.5-flash-lite`, which succeeded in the
+[real local READY walkthrough](LOCAL_DEMO_VERIFICATION.md). In the
 2026-10-04 `INC-1020` scenario, the existing EC2 pipeline saved seven
 synthetic evidence events. A local Gemini worker retried the prior
 `UNAVAILABLE` analysis and wrote `READY`; the EC2 dashboard showed three

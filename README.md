@@ -4,8 +4,9 @@ Incident detection, diagnosis and response for distributed systems.
 
 Incident watches a set of microservices, detects persistent health failures locally or alarms through AWS CloudWatch, groups related failures into a single incident, works out which service failed first, and uses a configurable Gemini or Amazon Bedrock model to suggest a root cause and remediation. An engineer approves or rejects each suggestion before anything runs.
 
-> Status: Stage 1 demo complete in code. AWS account quota and CDK migration remain
-> operational gates before inviting real users.
+> Status: Local automatic detection, evidence review, and Gemini READY diagnosis
+> verified on a real Docker stack ([walkthrough](docs/LOCAL_DEMO_VERIFICATION.md)).
+> Deployed Bedrock diagnosis and migration of the original AWS demo to CDK remain unverified.
 
 ## Architecture
 
@@ -30,13 +31,13 @@ services (Docker on EC2) ──logs/metrics──▶ CloudWatch ──alarm─�
 5. [x] CloudWatch detection
 6. [x] Lambda incident pipeline (DynamoDB, S3, SQS)
 7. [x] Dependency graph, correlation, severity
-8. [x] AI diagnosis + human approval (live model verification pending)
+8. [x] AI diagnosis + human approval ([local Gemini READY verified](docs/LOCAL_DEMO_VERIFICATION.md); approval tested with fakes)
 9. [x] Incident detail page + evaluation harness
 10. [x] Infrastructure as code (CDK), hardening, docs ([fresh deployment verified](docs/STEP10_VERIFICATION.md); migration of the original demo remains)
 
 ## Development
 
-Requirements: Python 3.12, Node 20+, Docker Desktop. AWS CLI v2 is needed for AWS mode or Bedrock, not local Gemini detection.
+Requirements: Python 3.12, Node 24, Docker Desktop. AWS CLI v2 is needed for AWS mode or Bedrock, not local Gemini detection.
 
 ```bash
 cp .env.example .env   # then fill in values
@@ -141,7 +142,8 @@ Interactive API docs: http://localhost:8000/docs
 ### AI diagnosis providers
 
 The application default and `.env.example` select `DIAGNOSIS_PROVIDER=gemini`
-with `GEMINI_MODEL=gemini-flash-latest`. Copy `.env.example` to the Git-ignored
+with `GEMINI_MODEL=gemini-3.5-flash-lite`, the model used in the recorded
+real local READY walkthrough. Copy `.env.example` to the Git-ignored
 `.env` and set `GEMINI_API_KEY` there for local Compose use. Only the backend
 receives the key. For upgrades, Compose selects Bedrock when an existing `.env`
 has no `DIAGNOSIS_PROVIDER`; new EC2 instances also start with Bedrock explicitly
@@ -161,31 +163,29 @@ be retried from the dashboard. Model output is validated and can only suggest
 `clear_chaos` for the probable root service; an engineer must explicitly
 approve it before any remediation runs.
 
-Gemini free-tier availability and limits depend on the model and the API
-project's active quota. Google currently documents the alias as
-`gemini-3.5-flash`, but its model metadata only reports the alias name. On
-2026-10-04 the alias returned HTTP 503 during a synthetic smoke call and its
-bounded retry. A separate synthetic call to the free-tier
-`gemini-3.5-flash-lite` returned that exact model version and passed the
-`ModelDiagnosis` schema with cited evidence. Set
-`GEMINI_MODEL=gemini-3.5-flash-lite` in the private `.env` to use this
-verified model locally; the repository default remains the requested alias.
-Fake-based diagnosis tests cover both adapters and failure handling. In one
-live `db_slow` scenario on 2026-10-04, the existing EC2 pipeline saved seven
-synthetic evidence events for `INC-1020`. After its Bedrock attempt returned
-`UNAVAILABLE`, a local Gemini diagnosis worker used the audited retry path and
-stored `READY`. The EC2 dashboard rendered payment as probable root, three
-supporting evidence statements, and a `clear_chaos:payment` suggestion still
-`PENDING`. The fault was restored through the simulation control; no AI
-recommendation was approved or executed. The deployed EC2 worker has not yet
-been switched to Gemini, and Bedrock has not produced a live `READY` result.
+The local walkthrough on 2026-10-04 verified two real Gemini diagnoses with
+`gemini-3.5-flash-lite`. An inventory crash automatically created `INC-1002`
+14.705421 seconds after the browser injection; **Review** showed saved probe
+failures, a timeline, and a **READY** diagnosis. An operator restarted inventory,
+then healthy probes recorded an **OK** alert. The incident stayed **OPEN** and
+its recommendation **PENDING**; no AI recommendation was approved or executed.
+Dashboard [PR #17](https://github.com/ghadikhoury/incident/pull/17) is merged,
+including guards against stale responses after environment changes. See the
+[verification report](docs/LOCAL_DEMO_VERIFICATION.md) for timestamps and limits.
+
+These successful calls establish a working local walkthrough, not measured AI
+accuracy or production reliability. Model quota and availability still depend
+on the API project. Bedrock remains selectable, but has not produced a live
+`READY` diagnosis in the recorded demonstrations. Fake-based tests cover both
+provider adapters, failure handling, retry, and human approval.
 
 ### Tests
 
 ```bash
 python -m venv .venv && .venv/Scripts/activate   # Windows; use .venv/bin/activate on Mac/Linux
-pip install -r requirements-dev.txt
-ruff check . && ruff format --check . && pytest   # unit tests
+pip install -r requirements-dev.txt -r infra/requirements.txt
+python -m infra.build                            # build Lambda asset for CDK assertions
+ruff check . && ruff format --check . && pytest   # services, backend, and infra/tests
 pytest integration                                # against a running `docker compose up` stack
 ```
 

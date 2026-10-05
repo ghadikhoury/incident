@@ -15,7 +15,7 @@ variables, screenshots, or source control. A model key is optional for detection
 ```dotenv
 INCIDENT_MODE=local
 DIAGNOSIS_PROVIDER=gemini
-GEMINI_MODEL=gemini-flash-latest
+GEMINI_MODEL=gemini-3.5-flash-lite
 ```
 
 Set `GEMINI_API_KEY` privately if using Gemini. Use synthetic demo evidence only,
@@ -102,5 +102,5 @@ Fake-based regression tests live in `backend/tests/test_local.py` and
 time, transient suppression, deduplication, dependency correlation, recovery,
 restart durability, bounded/redacted evidence, local/AWS isolation, failed and
 missing model configuration, explicit retry, and human approval. They need no
-live key. Runtime results for the completed browser walkthrough are recorded in
-the companion dashboard PR.
+live key. The [verification report](LOCAL_DEMO_VERIFICATION.md) records the
+completed real Gemini READY browser walkthrough and merged dashboard PR #17.
